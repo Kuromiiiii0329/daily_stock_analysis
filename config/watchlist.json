@@ -1,0 +1,9 @@
+{
+  "_schema_version": "1",
+  "stock_list": [
+    "600519",
+    "300750"
+  ],
+  "report_type": "simple",
+  "market_review_enabled": true
+}

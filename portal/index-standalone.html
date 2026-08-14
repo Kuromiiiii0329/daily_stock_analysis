@@ -1,0 +1,1631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>股票分析 · Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --brand:    #2563eb;
+      --brand-lt: #eff6ff;
+      --green:    #16a34a;
+      --red:      #dc2626;
+      --amber:    #d97706;
+      --gray-50:  #f9fafb;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+    /* Tab panel visibility */
+    .tab-panel          { display: none; }
+    .tab-panel.active   { display: block; }
+
+    /* Nav tab button states */
+    .nav-tab            { transition: all .15s; }
+    .nav-tab.active     { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); color: #1e40af; }
+
+    /* Form controls */
+    .form-input, .form-select {
+      width: 100%; padding: .5rem .75rem;
+      border: 1.5px solid #e5e7eb; border-radius: .5rem;
+      font-size: .875rem; background: #fff; outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .form-input:focus, .form-select:focus {
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+
+    /* Signal badges */
+    .badge-buy   { background:#dcfce7; color:#15803d; }
+    .badge-watch { background:#dbeafe; color:#1d4ed8; }
+    .badge-hold  { background:#f3f4f6; color:#4b5563; }
+    .badge-sell  { background:#fee2e2; color:#b91c1c; }
+
+    /* Score ring animation */
+    @keyframes ring-in { from { stroke-dashoffset: 251; } }
+    .score-ring { animation: ring-in .6s ease-out forwards; }
+
+    /* Log terminal */
+    #log-box {
+      font-family: 'Menlo','Monaco','Consolas',monospace;
+      font-size: .7rem; line-height: 1.6;
+    }
+
+    /* Report section accordion */
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+    details[open] > summary .chevron { transform: rotate(90deg); }
+    .chevron { transition: transform .2s; display: inline-block; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 9px; }
+
+    /* Chip */
+    .chip { cursor: pointer; transition: all .12s; user-select: none; }
+    .chip:hover { border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; }
+    .chip.selected { border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; font-weight: 600; }
+
+    /* Server status dot */
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .status-dot.online  { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.2); }
+    .status-dot.offline { background: #d1d5db; }
+    .status-dot.checking{ background: #fbbf24; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    /* Skeleton loader */
+    .skeleton { background: linear-gradient(90deg,#f0f0f0 25%,#e0e0e0 50%,#f0f0f0 75%);
+                background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius:.375rem; }
+    @keyframes shimmer { 0%{background-position:200%} 100%{background-position:-200%} }
+
+    /* Toast */
+    #toast { transition: opacity .25s, transform .25s; }
+    #toast.hidden { opacity: 0; transform: translateY(8px); pointer-events: none; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- ══════════════ HEADER ══════════════ -->
+<header class="bg-white border-b border-gray-200 sticky top-0 z-40">
+  <div class="max-w-4xl mx-auto px-4 h-14 flex items-center gap-4">
+
+    <!-- Brand -->
+    <div class="flex items-center gap-2 flex-shrink-0">
+      <span class="text-xl">📈</span>
+      <span class="font-bold text-gray-900 text-sm tracking-tight">股票分析 Portal</span>
+    </div>
+
+    <!-- Nav tabs -->
+    <nav class="flex-1 flex bg-gray-100 rounded-xl p-1 gap-1 max-w-xs" id="tab-nav" role="tablist">
+      <!-- filled by JS -->
+    </nav>
+
+    <!-- Server status -->
+    <div class="ml-auto flex items-center gap-2 flex-shrink-0">
+      <span class="status-dot checking" id="status-dot"></span>
+      <span class="text-xs text-gray-500" id="status-label">检测中</span>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════════ MAIN ══════════════ -->
+<main class="max-w-4xl mx-auto px-4 py-6">
+  <div id="tab-content"><!-- panels injected by JS --></div>
+</main>
+
+<!-- ══════════════ STICKY FOOTER ══════════════ -->
+<footer class="bg-white border-t border-gray-200 sticky bottom-0 z-30">
+  <div class="max-w-4xl mx-auto px-4 h-12 flex items-center justify-between">
+    <p id="footer-time" class="text-xs text-gray-400"></p>
+    <button id="btn-save"
+      class="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700
+             text-white text-xs font-semibold rounded-lg transition-colors">
+      <span>💾</span><span>保存配置</span>
+    </button>
+  </div>
+</footer>
+
+<!-- ══════════════ MODAL ══════════════ -->
+<div id="modal" class="fixed inset-0 z-50 hidden">
+  <div id="modal-bg" class="absolute inset-0 bg-black/40 backdrop-blur-sm"></div>
+  <div class="relative z-10 flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-4 border-b">
+        <h2 class="font-semibold text-gray-800">保存配置</h2>
+        <button id="modal-close" class="text-gray-400 hover:text-gray-700 text-2xl leading-none">×</button>
+      </div>
+      <div class="px-5 py-4 space-y-4">
+
+        <!-- Direct save (needs server) -->
+        <div id="modal-direct" class="rounded-xl border-2 border-green-200 bg-green-50 p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-sm font-semibold text-green-800">🚀 直接保存到文件</p>
+              <p class="text-xs text-green-700 mt-0.5">自动写入 <code class="bg-green-100 px-1 rounded">config/watchlist.json</code></p>
+            </div>
+            <button id="modal-btn-save" disabled
+              class="flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors
+                     bg-gray-200 text-gray-400 cursor-not-allowed">
+              保存
+            </button>
+          </div>
+          <div id="modal-save-msg" class="mt-2 text-xs hidden"></div>
+          <p id="modal-server-hint" class="mt-2 text-xs text-green-700">
+            需要先运行：<code class="bg-green-100 px-1 rounded">python portal/server.py</code>
+          </p>
+        </div>
+
+        <!-- Copy -->
+        <div class="rounded-xl border border-gray-200 p-4">
+          <p class="text-sm font-semibold text-gray-700 mb-2">📋 复制 JSON</p>
+          <div class="relative">
+            <textarea id="modal-json" readonly rows="7"
+              class="w-full font-mono text-xs bg-gray-50 border border-gray-200 rounded-lg p-2.5 resize-none focus:outline-none"></textarea>
+            <button id="modal-copy"
+              class="absolute top-2 right-2 px-2.5 py-1 bg-blue-600 hover:bg-blue-700
+                     text-white text-xs rounded-md transition-colors">复制</button>
+          </div>
+          <p class="mt-2 text-xs text-gray-400">复制后粘贴保存为仓库中的 config/watchlist.json 并提交</p>
+        </div>
+
+      </div>
+      <div class="px-5 py-3 border-t flex justify-end">
+        <button id="modal-close2" class="px-4 py-1.5 text-sm text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ TOAST ══════════════ -->
+<div id="toast" class="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 hidden
+                       px-4 py-2 rounded-xl text-white text-xs font-medium shadow-lg">
+</div>
+
+<!-- ══════════════ JS ══════════════ -->
+<script>
+
+// ── js/components/toast.js ──────────────────────────
+/**
+ * components/toast.js — 轻量通知条
+ */
+class Toast {
+  constructor() { this._el = null; this._timer = null; }
+  _el_() {
+    if (!this._el) this._el = document.getElementById('toast');
+    return this._el;
+  }
+  show(msg, type = 'info', ms = 2400) {
+    const el = this._el_();
+    if (!el) return;
+    const colors = { success: 'bg-green-600', error: 'bg-red-600', warning: 'bg-amber-500', info: 'bg-gray-800' };
+    el.removeAttribute('class');
+    el.className = `fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl text-white text-xs font-medium shadow-lg whitespace-nowrap ${colors[type] || colors.info}`;
+    el.textContent = msg;
+    el.style.display = '';
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(() => { el.style.display = 'none'; }, ms);
+  }
+}
+const toast = new Toast();
+
+// ── js/components/modal.js ──────────────────────────
+/**
+ * components/modal.js — 保存配置弹窗
+ */
+
+const SERVER_MODAL = 'http://127.0.0.1:7788';
+
+class Modal {
+  constructor() {
+    this._el     = null;
+    this._store  = null;
+    this._toast  = null;
+    this._online = false;
+  }
+
+  init(store, serverUrl, toast) {
+    this._store = store;
+    this._toast = toast;
+    this._el = document.getElementById('modal');
+
+    document.getElementById('modal-bg')?.addEventListener('click', () => this.hide());
+    document.getElementById('modal-close')?.addEventListener('click', () => this.hide());
+    document.getElementById('modal-close2')?.addEventListener('click', () => this.hide());
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') this.hide(); });
+
+    // 复制按钮
+    document.getElementById('modal-copy')?.addEventListener('click', async () => {
+      const ta = document.getElementById('modal-json');
+      try {
+        await navigator.clipboard.writeText(ta.value);
+        this._toast.show('已复制到剪贴板', 'success');
+      } catch { ta.select(); }
+    });
+
+    // 直接保存按钮
+    document.getElementById('modal-btn-save')?.addEventListener('click', () => this._directSave());
+  }
+
+  setServerOnline(online) {
+    this._online = online;
+    this._refreshSaveBtn();
+  }
+
+  show(json) {
+    document.getElementById('modal-json').value = json;
+    document.getElementById('modal-save-msg')?.classList.add('hidden');
+    this._refreshSaveBtn();
+    this._el?.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  hide() {
+    this._el?.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  _refreshSaveBtn() {
+    const btn  = document.getElementById('modal-btn-save');
+    const hint = document.getElementById('modal-server-hint');
+    if (!btn) return;
+    if (this._online) {
+      btn.disabled = false;
+      btn.className = 'flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors bg-green-600 hover:bg-green-700 text-white cursor-pointer';
+      btn.textContent = '💾 保存';
+      if (hint) hint.classList.add('hidden');
+    } else {
+      btn.disabled = true;
+      btn.className = 'flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-200 text-gray-400 cursor-not-allowed';
+      btn.textContent = '保存（需服务）';
+      if (hint) hint.classList.remove('hidden');
+    }
+  }
+
+  async _directSave() {
+    const json = document.getElementById('modal-json').value;
+    const btn  = document.getElementById('modal-btn-save');
+    const msg  = document.getElementById('modal-save-msg');
+    btn.disabled = true;
+    btn.textContent = '⏳ 保存中...';
+    try {
+      const res  = await fetch(`${SERVER_MODAL}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: json,
+        signal: AbortSignal.timeout(5000),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        msg.className = 'mt-2 text-xs text-green-700 bg-green-100 rounded-lg px-2 py-1';
+        msg.textContent = '✅ 已保存到 config/watchlist.json';
+        msg.classList.remove('hidden');
+        btn.textContent = '✅ 已保存';
+        setTimeout(() => { btn.textContent = '💾 保存'; btn.disabled = false; }, 2000);
+      } else throw new Error(data.error);
+    } catch (e) {
+      msg.className = 'mt-2 text-xs text-red-600 bg-red-50 rounded-lg px-2 py-1';
+      msg.textContent = `❌ 保存失败：${e.message}`;
+      msg.classList.remove('hidden');
+      btn.textContent = '💾 保存';
+      btn.disabled = false;
+    }
+  }
+}
+
+const modal = new Modal();
+
+// ── js/components/report-view.js ──────────────────────────
+/**
+ * components/report-view.js — 双栏结构化报告渲染组件
+ *
+ * 接受 merger.py 返回的 JSON，渲染：
+ *   左栏：技术面
+ *   右栏：基本面 + 产业链
+ *   底部：综合结论 + 评分
+ */
+
+const SIGNAL_CONFIG = {
+  buy:   { label: '买入',  bg: 'bg-green-100',  text: 'text-green-700',  border: 'border-green-300',  dot: '#16a34a' },
+  watch: { label: '关注',  bg: 'bg-blue-100',   text: 'text-blue-700',   border: 'border-blue-300',   dot: '#2563eb' },
+  hold:  { label: '持有',  bg: 'bg-gray-100',   text: 'text-gray-600',   border: 'border-gray-300',   dot: '#6b7280' },
+  sell:  { label: '卖出',  bg: 'bg-red-100',    text: 'text-red-700',    border: 'border-red-300',    dot: '#dc2626' },
+};
+
+const DIM_ICONS = {
+  technical:   '📊',
+  fundamental: '📈',
+  industry:    '🏭',
+};
+
+class ReportView {
+  /**
+   * @param {HTMLElement} container  报告挂载节点
+   */
+  constructor(container) {
+    this._container = container;
+  }
+
+  /** 渲染结构化报告（merger.py 返回的 JSON 对象） */
+  render(report) {
+    const { stock_code, stock_name, overall_score, overall_signal,
+            overall_signal_label, conclusion, dimensions, generated_at } = report;
+
+    const sig = SIGNAL_CONFIG[overall_signal] || SIGNAL_CONFIG.hold;
+
+    this._container.innerHTML = `
+      <!-- 报告头部 -->
+      <div class="mb-5 p-4 rounded-xl bg-gradient-to-r from-gray-50 to-blue-50 border border-gray-200">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <span class="font-bold text-xl text-gray-900">${this._esc(stock_name)}</span>
+            <span class="ml-2 font-mono text-sm text-gray-500">${this._esc(stock_code)}</span>
+          </div>
+          <div class="flex items-center gap-3">
+            ${this._scoreBadge(overall_score, overall_signal)}
+            <span class="text-xs text-gray-400">${this._fmtTime(generated_at)}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 双栏维度报告 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5" id="report-columns"></div>
+
+      <!-- 综合结论 -->
+      <div class="p-4 rounded-xl border-2 ${sig.border} ${sig.bg}">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-base font-bold ${sig.text}">🎯 综合结论</span>
+          <span class="text-xs px-2 py-0.5 rounded-full bg-white/70 ${sig.text} font-medium border ${sig.border}">
+            ${overall_signal_label || sig.label}
+          </span>
+          <span class="text-xs text-gray-500 ml-auto">综合评分 ${overall_score}/100</span>
+        </div>
+        <p class="text-sm text-gray-700 leading-relaxed">${this._esc(conclusion)}</p>
+      </div>
+    `;
+
+    // 渲染各维度列
+    const colContainer = this._container.querySelector('#report-columns');
+
+    // 技术面单独一栏，基本面+产业链合并一栏
+    const techDims  = dimensions.filter(d => d.dimension === 'technical');
+    const otherDims = dimensions.filter(d => d.dimension !== 'technical');
+
+    if (techDims.length) {
+      const col = document.createElement('div');
+      col.className = 'space-y-4';
+      techDims.forEach(d => col.appendChild(this._renderDimension(d)));
+      colContainer.appendChild(col);
+    }
+
+    if (otherDims.length) {
+      const col = document.createElement('div');
+      col.className = 'space-y-4';
+      otherDims.forEach(d => col.appendChild(this._renderDimension(d)));
+      colContainer.appendChild(col);
+    }
+  }
+
+  _renderDimension(dim) {
+    const sig  = SIGNAL_CONFIG[dim.signal] || SIGNAL_CONFIG.hold;
+    const icon = DIM_ICONS[dim.dimension] || '📋';
+
+    const el = document.createElement('div');
+    el.className = 'bg-white border border-gray-200 rounded-xl overflow-hidden';
+    el.innerHTML = `
+      <!-- 维度头部 -->
+      <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-100">
+        <div class="flex items-center gap-2">
+          <span class="text-base">${icon}</span>
+          <span class="font-semibold text-sm text-gray-800">${this._esc(dim.name)}</span>
+          ${dim.error ? '<span class="text-xs text-red-500">⚠️ 分析异常</span>' : ''}
+        </div>
+        <div class="flex items-center gap-2">
+          ${this._scoreBadge(dim.score, dim.signal, 'sm')}
+        </div>
+      </div>
+
+      <!-- 一句话摘要 -->
+      ${dim.summary ? `
+        <div class="px-4 py-2 bg-${sig.bg.replace('bg-','')} border-b border-gray-100">
+          <p class="text-xs ${sig.text} leading-relaxed">${this._esc(dim.summary)}</p>
+        </div>
+      ` : ''}
+
+      <!-- 子模块列表 -->
+      <div class="divide-y divide-gray-100" id="sections-${dim.dimension}"></div>
+    `;
+
+    const sectionsEl = el.querySelector(`#sections-${dim.dimension}`);
+    if (dim.error) {
+      sectionsEl.innerHTML = `<div class="px-4 py-3 text-sm text-red-500">${this._esc(dim.error)}</div>`;
+    } else {
+      dim.sections.forEach(sec => sectionsEl.appendChild(this._renderSection(sec)));
+    }
+
+    return el;
+  }
+
+  _renderSection(sec) {
+    const sig = SIGNAL_CONFIG[sec.signal] || SIGNAL_CONFIG.hold;
+    const el = document.createElement('details');
+    el.className = 'group';
+    el.innerHTML = `
+      <summary class="flex items-center justify-between px-4 py-2.5 cursor-pointer hover:bg-gray-50 select-none list-none">
+        <div class="flex items-center gap-2">
+          <span class="text-gray-400 group-open:rotate-90 transition-transform text-xs">▶</span>
+          <span class="text-sm font-medium text-gray-700">${this._esc(sec.title)}</span>
+        </div>
+        <span class="text-xs px-1.5 py-0.5 rounded ${sig.bg} ${sig.text} font-medium">
+          ${sig.label}
+        </span>
+      </summary>
+      <div class="px-4 pb-3 pt-1 text-xs text-gray-600 leading-relaxed bg-gray-50/50">
+        ${this._mdToHtml(sec.content)}
+      </div>
+    `;
+    // 默认展开评分较高的子模块
+    if (sec.score >= 65 || sec.score <= 35) {
+      el.setAttribute('open', '');
+    }
+    return el;
+  }
+
+  _scoreBadge(score, signal, size = 'md') {
+    const sig = SIGNAL_CONFIG[signal] || SIGNAL_CONFIG.hold;
+    const width  = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-12 h-12 text-sm';
+    const color  = score >= 70 ? '#16a34a' : score >= 55 ? '#2563eb' : score >= 40 ? '#6b7280' : '#dc2626';
+    const radius = size === 'sm' ? 14 : 20;
+    const circum = 2 * Math.PI * radius;
+    const dash   = (score / 100) * circum;
+
+    return `
+      <div class="flex items-center gap-1.5">
+        <svg class="${width}" viewBox="0 0 ${radius * 2 + 8} ${radius * 2 + 8}">
+          <circle cx="${radius + 4}" cy="${radius + 4}" r="${radius}"
+                  fill="none" stroke="#e5e7eb" stroke-width="3"/>
+          <circle cx="${radius + 4}" cy="${radius + 4}" r="${radius}"
+                  fill="none" stroke="${color}" stroke-width="3"
+                  stroke-dasharray="${dash} ${circum}"
+                  stroke-dashoffset="${circum * 0.25}"
+                  stroke-linecap="round"/>
+          <text x="${radius + 4}" y="${radius + 4}" text-anchor="middle"
+                dominant-baseline="central" font-size="${size === 'sm' ? 9 : 11}"
+                font-weight="bold" fill="${color}">${score}</text>
+        </svg>
+        <span class="text-xs px-1.5 py-0.5 rounded ${sig.bg} ${sig.text} font-medium">${sig.label}</span>
+      </div>
+    `;
+  }
+
+  /** 极简 Markdown → HTML */
+  _mdToHtml(md) {
+    if (!md) return '';
+    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return md.split('\n').map(line => {
+      if (/^\*\*(.+)\*\*$/.test(line)) return `<p class="font-semibold text-gray-800 mt-1">${esc(line.replace(/\*\*/g,''))}</p>`;
+      if (/^#{1,3} (.+)/.test(line))   return `<p class="font-semibold text-gray-800 mt-1">${esc(line.replace(/^#+\s/,''))}</p>`;
+      if (/^[-*] (.+)/.test(line))     return `<p class="pl-2">• ${esc(line.slice(2))}</p>`;
+      if (line.trim() === '')          return '';
+      let html = esc(line);
+      html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/`(.+?)`/g, '<code class="bg-gray-200 px-0.5 rounded text-blue-700">$1</code>');
+      // 符号着色
+      html = html.replace(/(✅|🟢)/g, '<span class="text-green-600">$1</span>');
+      html = html.replace(/(⚠️|🔴|❌)/g, '<span class="text-red-500">$1</span>');
+      return `<p>${html}</p>`;
+    }).filter(Boolean).join('\n');
+  }
+
+  _fmtTime(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString('zh-CN', {
+        month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+      });
+    } catch { return iso; }
+  }
+
+  _esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+}
+
+// ── js/store.js ──────────────────────────
+/**
+ * store.js — 全局状态管理 + localStorage 持久化
+ */
+
+const KEY = 'dsa_portal_v2';
+
+const DEFAULTS = {
+  stock_list: [],
+  report_type: 'simple',
+  market_review_enabled: true,
+  market_review_region: 'cn',
+  analysis_delay: 0,
+  max_workers: 1,
+  force_run: false,
+  email: { enabled: true, subject_prefix: 'A股智能分析' },
+};
+
+class Store {
+  constructor() {
+    this._state = this._load();
+    this._subs = [];
+  }
+
+  get() { return structuredClone(this._state); }
+
+  addStock(raw) {
+    const code = raw.trim().toUpperCase();
+    if (!code) return { ok: false, msg: '代码不能为空' };
+    if (this._state.stock_list.includes(code)) return { ok: false, msg: `${code} 已存在` };
+    this._state.stock_list = [...this._state.stock_list, code];
+    this._save(); this._emit(); return { ok: true };
+  }
+
+  removeStock(code) {
+    this._state.stock_list = this._state.stock_list.filter(c => c !== code);
+    this._save(); this._emit();
+  }
+
+  set(key, value) {
+    if (key.includes('.')) {
+      const [p, c] = key.split('.');
+      this._state[p] = { ...this._state[p], [c]: value };
+    } else {
+      this._state[key] = value;
+    }
+    this._save(); this._emit();
+  }
+
+  subscribe(fn) { this._subs.push(fn); fn(this.get()); }
+
+  toJSON() {
+    return JSON.stringify({
+      _schema_version: '1',
+      _comment: '由 portal/index.html 生成，提交到仓库后被 portal-daily-analysis.yml 读取',
+      updated_at: new Date().toISOString(),
+      ...this._state,
+    }, null, 2);
+  }
+
+  _emit() { const s = this.get(); this._subs.forEach(f => f(s)); }
+
+  _save() {
+    try { localStorage.setItem(KEY, JSON.stringify(this._state)); } catch {}
+  }
+
+  _load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw) return this._merge(DEFAULTS, JSON.parse(raw));
+    } catch {}
+    return structuredClone(DEFAULTS);
+  }
+
+  _merge(base, over) {
+    const r = structuredClone(base);
+    for (const k of Object.keys(over)) {
+      if (k in r && typeof r[k] === 'object' && !Array.isArray(r[k]) && r[k] !== null)
+        r[k] = this._merge(r[k], over[k]);
+      else r[k] = over[k];
+    }
+    return r;
+  }
+}
+
+const store = new Store();
+
+// ── js/tabs/watchlist.js ──────────────────────────
+/**
+ * tabs/watchlist.js — 选股管理（纯静态，无需 server）
+ */
+class WatchlistTab {
+  constructor(container, store, toast) {
+    this._c = container; this._s = store; this._t = toast;
+  }
+  init() {
+    this._c.innerHTML = `
+      <div class="max-w-2xl mx-auto space-y-5 pb-20">
+        <div>
+          <h2 class="text-base font-semibold text-gray-900">自选股管理</h2>
+          <p class="text-xs text-gray-500 mt-0.5">支持 A股（600519）、港股（00700）、美股（AAPL）</p>
+        </div>
+
+        <!-- 输入区 -->
+        <div class="flex gap-2">
+          <input id="wl-input" type="text" placeholder="输入股票代码，如 600519" maxlength="12"
+            class="form-input flex-1" autocomplete="off" />
+          <button id="wl-add"
+            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+            添加
+          </button>
+        </div>
+
+        <!-- 列表 -->
+        <div id="wl-list" class="space-y-1.5"></div>
+        <p id="wl-count" class="text-xs text-gray-400"></p>
+      </div>`;
+
+    const input = this._c.querySelector('#wl-input');
+    this._c.querySelector('#wl-add').addEventListener('click', () => this._add(input));
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') this._add(input); });
+    this._s.subscribe(state => this._render(state));
+  }
+
+  _add(input) {
+    const r = this._s.addStock(input.value);
+    if (r.ok) { input.value = ''; this._t.show('已添加', 'success'); }
+    else this._t.show(r.msg, 'warning');
+  }
+
+  _render(state) {
+    const list  = this._c.querySelector('#wl-list');
+    const count = this._c.querySelector('#wl-count');
+    if (!list) return;
+    const stocks = state.stock_list || [];
+    if (!stocks.length) {
+      list.innerHTML = `
+        <div class="py-12 text-center text-gray-300">
+          <div class="text-4xl mb-2">📋</div>
+          <p class="text-sm">还没有自选股</p>
+        </div>`;
+      if (count) count.textContent = '';
+      return;
+    }
+    list.innerHTML = stocks.map((c, i) => `
+      <div class="flex items-center justify-between px-4 py-2.5 bg-white rounded-xl border border-gray-100
+                  hover:border-blue-200 hover:shadow-sm transition-all group">
+        <div class="flex items-center gap-3">
+          <span class="text-xs text-gray-300 w-4 text-right">${i + 1}</span>
+          <span class="font-mono font-semibold text-sm text-gray-800">${this._esc(c)}</span>
+        </div>
+        <button data-del="${this._esc(c)}"
+          class="text-gray-200 hover:text-red-400 transition-colors text-lg leading-none opacity-0 group-hover:opacity-100">×</button>
+      </div>`).join('');
+    list.querySelectorAll('[data-del]').forEach(b =>
+      b.addEventListener('click', () => { this._s.removeStock(b.dataset.del); this._t.show('已移除', 'info'); }));
+    if (count) count.textContent = `共 ${stocks.length} 只`;
+  }
+
+  _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+}
+
+// ── js/tabs/settings.js ──────────────────────────
+/**
+ * tabs/settings.js — 分析参数设置（纯静态，无需 server）
+ * Toggle 用 JS 驱动，不依赖 Tailwind peer（innerHTML 里 peer 无效）
+ */
+class SettingsTab {
+  constructor(container, store, toast) {
+    this._c = container; this._s = store; this._t = toast;
+  }
+
+  init() {
+    this._c.innerHTML = `
+      <div class="max-w-2xl mx-auto space-y-6 pb-20">
+        <div>
+          <h2 class="text-base font-semibold text-gray-900">分析设置</h2>
+          <p class="text-xs text-gray-500 mt-0.5">修改后点击底部「保存配置」导出</p>
+        </div>
+
+        <div class="bg-white rounded-2xl border border-gray-100 shadow-sm divide-y divide-gray-50">
+
+          ${this._row('报告类型', `
+            <select id="cfg-report-type" class="form-select w-48">
+              <option value="simple">简洁（推荐）</option>
+              <option value="brief">极简</option>
+              <option value="full">完整</option>
+            </select>`, '影响邮件内容详细程度')}
+
+          ${this._row('大盘复盘', `
+            <div class="flex items-center gap-3">
+              <button id="cfg-market-review-btn" type="button"
+                class="relative flex-shrink-0 w-10 h-5 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 bg-blue-500"
+                role="switch" aria-checked="true">
+                <span id="cfg-market-thumb"
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform translate-x-5"></span>
+              </button>
+              <input type="checkbox" id="cfg-market-review" class="hidden" checked />
+              <span class="text-sm text-gray-700" id="cfg-market-label">已启用</span>
+            </div>`, '每日附带大盘指数复盘')}
+
+          ${this._row('大盘市场', `
+            <select id="cfg-market-region" class="form-select w-40">
+              <option value="cn">A股（沪深）</option>
+              <option value="hk">港股</option>
+              <option value="us">美股</option>
+              <option value="both">全市场</option>
+            </select>`)}
+
+          ${this._row('分析并发数', `
+            <div class="flex items-center gap-2">
+              <input type="number" id="cfg-workers" min="1" max="5" class="form-input w-20" />
+              <span class="text-xs text-gray-400">建议 1-3，过高易限流</span>
+            </div>`)}
+
+          ${this._row('LLM 间隔(秒)', `
+            <div class="flex items-center gap-2">
+              <input type="number" id="cfg-delay" min="0" max="300" class="form-input w-20" />
+              <span class="text-xs text-gray-400">防止 API 限流</span>
+            </div>`)}
+
+          ${this._row('强制运行', `
+            <div class="flex items-center gap-3">
+              <button id="cfg-force-btn" type="button"
+                class="relative flex-shrink-0 w-10 h-5 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 bg-gray-200"
+                role="switch" aria-checked="false">
+                <span id="cfg-force-thumb"
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform translate-x-0"></span>
+              </button>
+              <input type="checkbox" id="cfg-force" class="hidden" />
+              <span class="text-xs text-gray-500">跳过交易日检查（含节假日）</span>
+            </div>`)}
+
+          ${this._row('邮件主题前缀', `
+            <input type="text" id="cfg-email-prefix" maxlength="30" placeholder="A股智能分析"
+              class="form-input w-56" />`)}
+        </div>
+
+        <!-- AI Key 说明 -->
+        <div class="bg-amber-50 border border-amber-100 rounded-2xl p-4">
+          <p class="text-xs font-semibold text-amber-800 mb-1.5">🔑 AI 密钥 &amp; 邮件配置</p>
+          <p class="text-xs text-amber-700 leading-relaxed">
+            <code class="bg-amber-100 px-1 rounded">GEMINI_API_KEY</code>、
+            <code class="bg-amber-100 px-1 rounded">EMAIL_SENDER</code>、
+            <code class="bg-amber-100 px-1 rounded">EMAIL_PASSWORD</code> 等敏感配置
+            存储在 GitHub 仓库 <strong>Settings → Secrets</strong> 中，不在此页面填写。
+            详见「说明」Tab。
+          </p>
+        </div>
+      </div>`;
+
+    this._bindToggle('cfg-market-review-btn', 'cfg-market-thumb', 'cfg-market-review',
+      (on) => {
+        const lbl = this._c.querySelector('#cfg-market-label');
+        if (lbl) lbl.textContent = on ? '已启用' : '已关闭';
+        this._s.set('market_review_enabled', on);
+      });
+
+    this._bindToggle('cfg-force-btn', 'cfg-force-thumb', 'cfg-force',
+      (on) => { this._s.set('force_run', on); });
+
+    this._bindInput('cfg-report-type',   'report_type');
+    this._bindInput('cfg-market-region', 'market_review_region');
+    this._bindInput('cfg-workers',       'max_workers',    v => Math.max(1, Math.min(5, +v || 1)));
+    this._bindInput('cfg-delay',         'analysis_delay', v => Math.max(0, +v || 0));
+    this._bindInput('cfg-email-prefix',  'email.subject_prefix');
+
+    this._s.subscribe(state => this._sync(state));
+  }
+
+  _row(label, control, hint = '') {
+    return `
+      <div class="flex items-center justify-between px-5 py-3.5 gap-4">
+        <div class="flex-shrink-0">
+          <p class="text-sm font-medium text-gray-700">${label}</p>
+          ${hint ? `<p class="text-xs text-gray-400 mt-0.5">${hint}</p>` : ''}
+        </div>
+        <div class="flex-shrink-0">${control}</div>
+      </div>`;
+  }
+
+  _bindToggle(btnId, thumbId, hiddenId, onChange) {
+    const btn    = this._c.querySelector(`#${btnId}`);
+    const thumb  = this._c.querySelector(`#${thumbId}`);
+    const hidden = this._c.querySelector(`#${hiddenId}`);
+    if (!btn) return;
+    const setOn = (on) => {
+      hidden.checked = on;
+      btn.setAttribute('aria-checked', String(on));
+      btn.classList.toggle('bg-blue-500', on);
+      btn.classList.toggle('bg-gray-200', !on);
+      thumb.classList.toggle('translate-x-5', on);
+      thumb.classList.toggle('translate-x-0', !on);
+      onChange(on);
+    };
+    btn.addEventListener('click', () => setOn(!hidden.checked));
+  }
+
+  _bindInput(id, key, xf = v => v) {
+    const el = this._c.querySelector(`#${id}`);
+    if (!el) return;
+    el.addEventListener('input', () => this._s.set(key, xf(el.value)));
+  }
+
+  _sync(state) {
+    const sv = (id, val) => { const el = this._c.querySelector(`#${id}`); if (el) el.value = val ?? ''; };
+    sv('cfg-report-type',   state.report_type);
+    sv('cfg-market-region', state.market_review_region);
+    sv('cfg-workers',       state.max_workers);
+    sv('cfg-delay',         state.analysis_delay);
+    sv('cfg-email-prefix',  state.email?.subject_prefix ?? 'A股智能分析');
+
+    this._applyToggle('cfg-market-review-btn', 'cfg-market-thumb', 'cfg-market-review',
+      !!state.market_review_enabled,
+      (on) => { const l = this._c.querySelector('#cfg-market-label'); if (l) l.textContent = on ? '已启用' : '已关闭'; });
+    this._applyToggle('cfg-force-btn', 'cfg-force-thumb', 'cfg-force', !!state.force_run);
+  }
+
+  _applyToggle(btnId, thumbId, hiddenId, on, sideEffect) {
+    const btn    = this._c.querySelector(`#${btnId}`);
+    const thumb  = this._c.querySelector(`#${thumbId}`);
+    const hidden = this._c.querySelector(`#${hiddenId}`);
+    if (!btn) return;
+    hidden.checked = on;
+    btn.setAttribute('aria-checked', String(on));
+    btn.classList.toggle('bg-blue-500', on);
+    btn.classList.toggle('bg-gray-200', !on);
+    thumb.classList.toggle('translate-x-5', on);
+    thumb.classList.toggle('translate-x-0', !on);
+    sideEffect?.(on);
+  }
+}
+
+// ── js/tabs/guide.js ──────────────────────────
+/**
+ * tabs/guide.js — 使用说明（纯静态）
+ */
+class GuideTab {
+  constructor(container, store, toast) { this._c = container; }
+
+  init() {
+    this._c.innerHTML = `
+      <div class="max-w-2xl mx-auto space-y-6">
+        <div>
+          <h2 class="text-base font-semibold text-gray-900">使用说明</h2>
+          <p class="text-xs text-gray-500 mt-0.5">两种使用模式，按需选择</p>
+        </div>
+
+        <!-- 模式说明 -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-blue-50 border border-blue-100 rounded-2xl p-4">
+            <p class="text-sm font-semibold text-blue-800 mb-1">🌐 纯静态模式</p>
+            <p class="text-xs text-blue-700 leading-relaxed">
+              管理自选股、调整参数、导出配置文件。<br/>
+              可直接通过 GitHub Pages 访问，无需启动任何程序。
+            </p>
+            <div class="mt-2 space-y-1">
+              <p class="text-xs text-blue-600">✓ 选股管理</p>
+              <p class="text-xs text-blue-600">✓ 参数设置</p>
+              <p class="text-xs text-blue-600">✓ 复制 JSON 配置</p>
+              <p class="text-xs text-blue-600">✓ GitHub Action 每日分析</p>
+            </div>
+          </div>
+          <div class="bg-green-50 border border-green-100 rounded-2xl p-4">
+            <p class="text-sm font-semibold text-green-800 mb-1">⚡ 本地增强模式</p>
+            <p class="text-xs text-green-700 leading-relaxed">
+              点击「直接保存」或「立即分析」时自动激活，无需手动启动。
+            </p>
+            <div class="mt-2 space-y-1">
+              <p class="text-xs text-green-600">✓ 直接写入配置文件</p>
+              <p class="text-xs text-green-600">✓ 立即触发个股深度分析</p>
+              <p class="text-xs text-green-600">✓ 实时查看分析日志</p>
+              <p class="text-xs text-green-600">✓ 结构化双维度报告</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 步骤 -->
+        <div class="bg-white border border-gray-100 rounded-2xl shadow-sm divide-y divide-gray-50">
+          ${[
+            ['1', '配置 GitHub Secrets', `
+              仓库 <strong>Settings → Secrets and variables → Actions</strong> 添加：
+              <div class="mt-2 overflow-x-auto">
+                <table class="w-full text-xs border-collapse">
+                  <thead><tr class="bg-gray-50">
+                    <th class="text-left px-2 py-1.5 border border-gray-100">变量名</th>
+                    <th class="text-left px-2 py-1.5 border border-gray-100">说明</th>
+                    <th class="px-2 py-1.5 border border-gray-100">必填</th>
+                  </tr></thead>
+                  <tbody>
+                    ${[
+                      ['EMAIL_SENDER','发件人邮箱','✅'],
+                      ['EMAIL_PASSWORD','SMTP 授权码','✅'],
+                      ['EMAIL_RECEIVERS','收件人，逗号分隔','✅'],
+                      ['GEMINI_API_KEY','Google Gemini Key（免费可用）','✅ AI必填其一'],
+                      ['DEEPSEEK_API_KEY','DeepSeek Key','可选'],
+                      ['OPENAI_API_KEY','OpenAI Key','可选'],
+                      ['TUSHARE_TOKEN','Tushare Pro Token（提升数据质量）','可选'],
+                    ].map(([n,d,r]) => `<tr>
+                      <td class="px-2 py-1 border border-gray-100 font-mono text-blue-700">${n}</td>
+                      <td class="px-2 py-1 border border-gray-100 text-gray-600">${d}</td>
+                      <td class="px-2 py-1 border border-gray-100 text-center">${r}</td>
+                    </tr>`).join('')}
+                  </tbody>
+                </table>
+              </div>`],
+            ['2', '配置自选股和参数', `
+              在「自选股」Tab 添加股票代码，在「设置」Tab 调整参数。<br/>
+              点击底部「保存配置」→「复制 JSON」→ 提交到仓库 <code class="bg-gray-100 px-1 rounded">config/watchlist.json</code>`],
+            ['3', '启用 GitHub Pages（可选）', `
+              仓库 Settings → Pages → Source: main，Folder: /portal<br/>
+              访问 <code class="bg-gray-100 px-1 rounded">https://用户名.github.io/仓库名/</code>`],
+            ['4', '等待每日自动分析', `
+              每个工作日北京时间 18:00 自动运行，结果发送到配置的邮箱。<br/>
+              也可在 Actions → <strong>Portal 每日股票分析</strong> 手动触发。`],
+            ['5', '本地立即分析（可选）', `
+              安装 Python 依赖后，直接在「立即运行」Tab 点击分析按钮，<br/>
+              首次点击会自动尝试启动本地服务，无需手动操作。<br/>
+              <code class="bg-gray-100 px-1 rounded text-xs">pip install -r requirements.txt</code>`],
+          ].map(([n, title, body]) => `
+            <div class="px-5 py-4 flex gap-4">
+              <div class="flex-shrink-0 w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center mt-0.5">${n}</div>
+              <div>
+                <p class="text-sm font-semibold text-gray-800 mb-1.5">${title}</p>
+                <div class="text-xs text-gray-600 leading-relaxed">${body}</div>
+              </div>
+            </div>`).join('')}
+        </div>
+
+        <!-- FAQ -->
+        <div class="space-y-2">
+          <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">常见问题</p>
+          ${[
+            ['邮件收不到？', '检查 EMAIL_SENDER/EMAIL_PASSWORD 是否正确，确认 SMTP 服务已开启（QQ邮箱需手动开启 POP3/SMTP）。'],
+            ['AI 分析报错？', '确认至少配置了一个 AI API Key（GEMINI_API_KEY 推荐，有免费额度）。'],
+            ['东方财富数据源失败？', '正常现象，系统自动切换到 AkShare/新浪备用源。'],
+            ['如何修改分析时间？', '修改 .github/workflows/portal-daily-analysis.yml 中的 cron 表达式，UTC = 北京时间 - 8h。'],
+          ].map(([q, a]) => `
+            <details class="bg-white border border-gray-100 rounded-xl overflow-hidden">
+              <summary class="px-4 py-3 text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50 flex items-center justify-between">
+                <span>${q}</span><span class="chevron text-gray-400 text-xs">▶</span>
+              </summary>
+              <div class="px-4 pb-3 text-xs text-gray-600 leading-relaxed">${a}</div>
+            </details>`).join('')}
+        </div>
+      </div>`;
+  }
+}
+
+// ── js/tabs/run.js ──────────────────────────
+/**
+ * tabs/run.js — 立即运行分析
+ *
+ * 关键设计：
+ * - 纯静态模式默认可用（大盘/全量走 /run，UI 可见）
+ * - "直接分析"或"直接保存"首次点击时自动尝试启动 server
+ * - server 不在线时弹出一次性引导，之后静默轮询恢复
+ */
+
+
+const SERVER_RUN = 'http://127.0.0.1:7788';
+
+const DIM_DEFS = {
+  technical: {
+    label: '📊 技术面', color: 'blue',
+    mods: {
+      ma_system: '均线系统 MA5/10/20/60', macd: 'MACD',
+      rsi: 'RSI', kdj: 'KDJ', bollinger: '布林带',
+      volume: '量价关系', pattern: 'K线形态(LLM)',
+      wave: '波浪理论(LLM)', chan: '缠论(LLM)',
+    },
+    defaults: ['ma_system','macd','rsi','kdj','bollinger','volume'],
+  },
+  fundamental: {
+    label: '📈 基本面', color: 'emerald',
+    mods: {
+      financials: '核心财报', growth: '成长能力',
+      dividend: '分红质量', capital_flow: '主力资金',
+      valuation: '估值水平（PE/PB）', business: '主营业务(LLM)',
+    },
+    defaults: ['financials','growth','valuation','capital_flow'],
+  },
+  industry: {
+    label: '🏭 产业链', color: 'violet',
+    mods: {
+      key_commodity: '核心商品/产品价格',
+      industry_chain: '产业链地位',
+      competitors: '竞争格局',
+      policy: '政策风向',
+    },
+    defaults: ['key_commodity','industry_chain','competitors','policy'],
+  },
+};
+
+class RunTab {
+  constructor(container, store, toast) {
+    this._c = container; this._s = store; this._t = toast;
+    this._online  = false;
+    this._sse     = null;
+    this._report  = null;
+    this._selDims = new Set(['technical','fundamental','industry']);
+    this._selMods = Object.fromEntries(
+      Object.entries(DIM_DEFS).map(([k,v]) => [k, new Set(v.defaults)])
+    );
+    this._serverStarting = false; // 防止重复触发启动
+  }
+
+  init() {
+    this._render();
+    this._s.subscribe(st => this._syncChips(st));
+  }
+
+  setServerStatus(online) {
+    const changed = online !== this._online;
+    this._online = online;
+    if (changed) this._updateOnlineUI();
+  }
+
+  // ── 主渲染 ────────────────────────────────────────────────
+  _render() {
+    this._c.innerHTML = `
+      <div class="max-w-3xl mx-auto space-y-5 pb-20">
+
+        <!-- 页头 -->
+        <div class="flex items-start justify-between">
+          <div>
+            <h2 class="text-base font-semibold text-gray-900">立即运行分析</h2>
+            <p class="text-xs text-gray-500 mt-0.5">深度双维度分析 · 或快速触发大盘/全量任务</p>
+          </div>
+          <!-- 服务状态 chip -->
+          <div id="run-svc-chip"
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium
+                   bg-gray-50 border-gray-200 text-gray-400">
+            <span class="status-dot offline" id="run-dot"></span>
+            <span id="run-svc-label">纯静态模式</span>
+          </div>
+        </div>
+
+        <!-- ① 深度分析卡片 -->
+        <div class="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
+          <div class="px-5 pt-4 pb-3 border-b border-gray-50">
+            <p class="text-sm font-semibold text-gray-800">🔬 深度分析</p>
+            <p class="text-xs text-gray-400 mt-0.5">技术面 + 基本面 + 产业链，生成结构化报告</p>
+          </div>
+          <div class="px-5 py-4 space-y-4">
+
+            <!-- 股票输入 -->
+            <div class="flex gap-2">
+              <input id="run-code" type="text" placeholder="股票代码，如 002466" maxlength="12"
+                class="form-input flex-1" autocomplete="off" />
+              <input id="run-name" type="text" placeholder="股票名称（可选）" maxlength="20"
+                class="form-input w-36" />
+            </div>
+
+            <!-- 自选股快速选 -->
+            <div id="run-chips" class="flex flex-wrap gap-1.5 min-h-[1.5rem]"></div>
+
+            <!-- 维度选择 -->
+            <div class="space-y-2" id="dim-list"></div>
+
+            <!-- 开始按钮 -->
+            <button id="btn-deep"
+              class="w-full py-2.5 rounded-xl text-sm font-bold transition-all
+                     bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-200
+                     active:scale-[.99]">
+              🔬 开始深度分析
+            </button>
+          </div>
+        </div>
+
+        <!-- ② 快速任务行 -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-white border border-gray-100 rounded-2xl shadow-sm p-4">
+            <p class="text-sm font-semibold text-gray-800 mb-1">🌐 大盘复盘</p>
+            <p class="text-xs text-gray-400 mb-3">分析大盘指数走势和市场情绪</p>
+            <div class="flex items-center justify-between">
+              <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+                <input type="checkbox" id="run-market-force" class="accent-blue-600" />强制运行
+              </label>
+              <button id="btn-market"
+                class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs
+                       font-semibold rounded-lg transition-colors">
+                ▶ 运行
+              </button>
+            </div>
+          </div>
+          <div class="bg-white border border-gray-100 rounded-2xl shadow-sm p-4">
+            <p class="text-sm font-semibold text-gray-800 mb-1">⚡ 全量分析</p>
+            <p class="text-xs text-gray-400 mb-3">按 watchlist.json 分析所有自选股</p>
+            <div class="flex items-center justify-between">
+              <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+                <input type="checkbox" id="run-full-force" class="accent-blue-600" />强制运行
+              </label>
+              <button id="btn-full"
+                class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs
+                       font-semibold rounded-lg transition-colors">
+                ▶ 运行
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ③ 日志区（运行时显示） -->
+        <div id="run-log-section" class="hidden bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
+          <div class="flex items-center justify-between px-4 py-2.5 border-b border-gray-50">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-semibold text-gray-700">运行日志</span>
+              <span id="run-badge"
+                class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">运行中</span>
+            </div>
+            <button id="btn-clear-log" class="text-xs text-gray-300 hover:text-gray-500">清空</button>
+          </div>
+          <div id="log-box" class="h-48 overflow-y-auto p-3 bg-gray-950" id="log-box"></div>
+        </div>
+
+        <!-- ④ 报告区（完成后显示） -->
+        <div id="run-report-section" class="hidden">
+          <div class="flex items-center justify-between mb-3">
+            <p class="text-sm font-semibold text-gray-800">📄 分析报告</p>
+            <button id="btn-copy-report"
+              class="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors">
+              复制
+            </button>
+          </div>
+          <div id="report-structured"></div>
+          <div id="report-markdown" class="hidden bg-white border border-gray-100 rounded-2xl p-5
+               text-sm text-gray-700 leading-relaxed"></div>
+        </div>
+      </div>`;
+
+    this._buildDims();
+    this._bindEvents();
+    this._updateOnlineUI();
+    this._report = new ReportView(this._c.querySelector('#report-structured'));
+  }
+
+  // ── 维度选择器 ────────────────────────────────────────────
+  _buildDims() {
+    const list = this._c.querySelector('#dim-list');
+    Object.entries(DIM_DEFS).forEach(([dimKey, dimDef]) => {
+      const colorMap = { blue: 'blue', emerald: 'emerald', violet: 'violet' };
+      const c = colorMap[dimDef.color] || 'blue';
+      const wrap = document.createElement('div');
+      wrap.className = `border border-gray-100 rounded-xl overflow-hidden`;
+      const checked = this._selDims.has(dimKey);
+      wrap.innerHTML = `
+        <div class="flex items-center gap-3 px-4 py-2.5 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
+             data-dim="${dimKey}">
+          <input type="checkbox" id="dim-${dimKey}" ${checked ? 'checked' : ''}
+            class="w-4 h-4 accent-${c}-600 cursor-pointer" />
+          <label for="dim-${dimKey}" class="text-sm font-medium text-gray-700 cursor-pointer flex-1 select-none">
+            ${dimDef.label}
+          </label>
+          <span class="text-xs text-gray-400">▼ 子模块</span>
+        </div>
+        <div class="dim-mods ${checked ? '' : 'hidden'} px-4 py-2.5 grid grid-cols-2 sm:grid-cols-3 gap-2 bg-white"
+             data-dim="${dimKey}">
+          ${Object.entries(dimDef.mods).map(([mk, ml]) => `
+            <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer hover:text-${c}-600">
+              <input type="checkbox" class="mod-cb accent-${c}-600 w-3.5 h-3.5"
+                data-dim="${dimKey}" data-mod="${mk}"
+                ${this._selMods[dimKey]?.has(mk) ? 'checked' : ''} />
+              ${ml}
+            </label>`).join('')}
+        </div>`;
+      list.appendChild(wrap);
+    });
+
+    // 维度行点击（不点 checkbox 本身时切换）
+    list.querySelectorAll('[data-dim]').forEach(row => {
+      if (row.classList.contains('dim-mods')) return;
+      row.addEventListener('click', e => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'LABEL') return;
+        const cb = row.querySelector('input[type=checkbox]');
+        cb.checked = !cb.checked; cb.dispatchEvent(new Event('change'));
+      });
+    });
+    list.querySelectorAll('[id^="dim-"]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const k = cb.id.replace('dim-', '');
+        const modsEl = list.querySelector(`.dim-mods[data-dim="${k}"]`);
+        cb.checked ? this._selDims.add(k) : this._selDims.delete(k);
+        modsEl?.classList.toggle('hidden', !cb.checked);
+      });
+    });
+    list.querySelectorAll('.mod-cb').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const { dim, mod } = cb.dataset;
+        cb.checked ? this._selMods[dim]?.add(mod) : this._selMods[dim]?.delete(mod);
+      });
+    });
+  }
+
+  // ── 自选股芯片 ────────────────────────────────────────────
+  _syncChips(state) {
+    const chips = this._c.querySelector('#run-chips');
+    if (!chips) return;
+    const stocks = state.stock_list || [];
+    if (!stocks.length) {
+      chips.innerHTML = '<span class="text-xs text-gray-300">（自选股为空，先去「自选股」Tab 添加）</span>';
+      return;
+    }
+    chips.innerHTML = stocks.map(code => `
+      <button class="chip px-2.5 py-1 text-xs border border-gray-200 rounded-lg font-mono text-gray-600"
+              data-code="${code}">${code}</button>`).join('');
+    chips.querySelectorAll('.chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._c.querySelector('#run-code').value = btn.dataset.code;
+        chips.querySelectorAll('.chip').forEach(b => b.classList.toggle('selected', b === btn));
+      });
+    });
+  }
+
+  // ── 在线状态 UI 更新 ───────────────────────────────────────
+  _updateOnlineUI() {
+    const dot   = this._c.querySelector('#run-dot');
+    const label = this._c.querySelector('#run-svc-label');
+    const chip  = this._c.querySelector('#run-svc-chip');
+    if (!dot) return;
+    if (this._online) {
+      dot.className   = 'status-dot online';
+      label.textContent = '本地服务在线';
+      chip.className = chip.className.replace(/bg-\S+|border-\S+|text-\S+/g, '').trim()
+        + ' bg-green-50 border-green-200 text-green-700';
+    } else {
+      dot.className   = 'status-dot offline';
+      label.textContent = '纯静态模式';
+      chip.className = chip.className.replace(/bg-\S+|border-\S+|text-\S+/g, '').trim()
+        + ' bg-gray-50 border-gray-200 text-gray-400';
+    }
+  }
+
+  // ── 事件绑定 ──────────────────────────────────────────────
+  _bindEvents() {
+    this._c.querySelector('#btn-deep').addEventListener('click',   () => this._deepAnalyze());
+    this._c.querySelector('#btn-market').addEventListener('click', () => this._quickRun('market'));
+    this._c.querySelector('#btn-full').addEventListener('click',   () => this._quickRun('full'));
+    this._c.querySelector('#run-code').addEventListener('keydown', e => { if (e.key === 'Enter') this._deepAnalyze(); });
+    this._c.querySelector('#btn-clear-log').addEventListener('click', () => {
+      this._c.querySelector('#log-box').innerHTML = '';
+    });
+    this._c.querySelector('#btn-copy-report').addEventListener('click', async () => {
+      const box = this._c.querySelector('#report-markdown');
+      const sbox = this._c.querySelector('#report-structured');
+      try {
+        await navigator.clipboard.writeText(box.dataset.raw || sbox.innerText || '');
+        this._t.show('已复制', 'success');
+      } catch { this._t.show('复制失败', 'warning'); }
+    });
+  }
+
+  // ── 自动启动 server ────────────────────────────────────────
+  /**
+   * 点击"直接分析"或"直接保存"时调用。
+   * 若 server 已在线，直接返回 true。
+   * 若未在线，尝试通过 fetch 触发 server（实际上由用户后台运行 server.py，
+   * 这里弹一次提示，然后轮询等待最多 20 秒）。
+   */
+  async _ensureServer() {
+    if (this._online) return true;
+    if (this._serverStarting) {
+      this._t.show('正在等待本地服务启动...', 'warning');
+      return false;
+    }
+    this._serverStarting = true;
+
+    // 弹出提示
+    this._t.show('需要本地服务，请运行：python portal/server.py', 'warning', 8000);
+
+    // 轮询等待 20 秒
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const r = await fetch(`${SERVER_RUN}/health`, { signal: AbortSignal.timeout(1000) });
+        if (r.ok) {
+          this._online = true;
+          this._serverStarting = false;
+          this._updateOnlineUI();
+          // 通知 app.js 的全局状态（通过自定义事件）
+          window.dispatchEvent(new CustomEvent('server-online'));
+          return true;
+        }
+      } catch {}
+    }
+    this._serverStarting = false;
+    this._t.show('本地服务未启动，请先运行 server.py', 'error');
+    return false;
+  }
+
+  // ── 深度分析 ──────────────────────────────────────────────
+  async _deepAnalyze() {
+    const code = this._c.querySelector('#run-code').value.trim().toUpperCase();
+    const name = this._c.querySelector('#run-name').value.trim();
+    if (!code) { this._t.show('请输入股票代码', 'warning'); return; }
+
+    const dims = [...this._selDims];
+    if (!dims.length) { this._t.show('请至少选择一个分析维度', 'warning'); return; }
+
+    // ★ 自动激活 server
+    const ok = await this._ensureServer();
+    if (!ok) return;
+
+    const modulesMap = Object.fromEntries(dims.map(d => [d, [...(this._selMods[d] || [])]]));
+    this._prepareLog(`🔬 深度分析：${name || code}（${code}）`);
+
+    let taskId;
+    try {
+      const res = await fetch(`${SERVER_RUN}/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stock_code: code, stock_name: name || code, dimensions: dims, modules: modulesMap }),
+      });
+      const d = await res.json();
+      if (!d.ok) throw new Error(d.error);
+      taskId = d.task_id;
+    } catch (e) {
+      this._t.show(`启动失败: ${e.message}`, 'error');
+      this._resetBtns(); return;
+    }
+    this._listenSSE(taskId, 'structured');
+  }
+
+  // ── 快速任务 ──────────────────────────────────────────────
+  async _quickRun(mode) {
+    // ★ 自动激活 server
+    const ok = await this._ensureServer();
+    if (!ok) return;
+
+    const force = this._c.querySelector(mode === 'market' ? '#run-market-force' : '#run-full-force')?.checked;
+    this._prepareLog(mode === 'market' ? '🌐 大盘复盘' : '⚡ 全量分析');
+
+    let taskId;
+    try {
+      const res = await fetch(`${SERVER_RUN}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, force_run: !!force, no_notify: true }),
+      });
+      const d = await res.json();
+      if (!d.ok) throw new Error(d.error);
+      taskId = d.task_id;
+    } catch (e) {
+      this._t.show(`启动失败: ${e.message}`, 'error');
+      this._resetBtns(); return;
+    }
+    this._listenSSE(taskId, 'markdown');
+  }
+
+  // ── 日志区准备 ────────────────────────────────────────────
+  _prepareLog(title) {
+    if (this._sse) { this._sse.close(); this._sse = null; }
+    const logSec = this._c.querySelector('#run-log-section');
+    const rptSec = this._c.querySelector('#run-report-section');
+    logSec.classList.remove('hidden');
+    rptSec.classList.add('hidden');
+    this._c.querySelector('#log-box').innerHTML = '';
+    this._c.querySelector('#report-structured').innerHTML = '';
+    const badge = this._c.querySelector('#run-badge');
+    badge.textContent = '运行中';
+    badge.className = 'text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium';
+    this._appendLog(title, 'info');
+    this._disableBtns();
+  }
+
+  // ── SSE 监听 ──────────────────────────────────────────────
+  _listenSSE(taskId, rtype) {
+    const sse = new EventSource(`${SERVER_RUN}/run/stream/${taskId}`);
+    this._sse = sse;
+    const box = this._c.querySelector('#log-box');
+    sse.onmessage = e => {
+      const d = JSON.parse(e.data);
+      this._appendLog(d.log, d.status === 'error' ? 'error' : 'default');
+    };
+    sse.addEventListener('done', e => {
+      sse.close(); this._sse = null;
+      const d = JSON.parse(e.data);
+      const ok = d.status === 'done';
+      const badge = this._c.querySelector('#run-badge');
+      badge.textContent = ok ? '完成 ✓' : '失败 ✗';
+      badge.className = `text-xs px-2 py-0.5 rounded-full font-medium ${ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`;
+      this._resetBtns();
+      if (d.has_report) this._loadReport(taskId, d.report_type || rtype);
+    });
+    sse.onerror = () => {
+      sse.close(); this._sse = null;
+      this._appendLog('⚠️ 连接断开，拉取结果...', 'warn');
+      setTimeout(() => this._loadReport(taskId, rtype), 600);
+      this._resetBtns();
+    };
+  }
+
+  async _loadReport(taskId, rtype) {
+    try {
+      const res = await fetch(`${SERVER_RUN}/run/report/${taskId}`);
+      const d = await res.json();
+      const box = this._c.querySelector('#log-box');
+      if (d.logs) {
+        const ex = box.children.length;
+        d.logs.slice(ex).forEach(l => this._appendLog(l));
+      }
+      if (d.report) {
+        rtype === 'structured' ? this._showStructured(d.report) : this._showMarkdown(d.report);
+      }
+    } catch {}
+  }
+
+  _showStructured(json) {
+    try {
+      const rpt = typeof json === 'string' ? JSON.parse(json) : json;
+      const sec = this._c.querySelector('#run-report-section');
+      this._c.querySelector('#report-markdown').classList.add('hidden');
+      sec.classList.remove('hidden');
+      this._report.render(rpt);
+      sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch { this._showMarkdown(String(json)); }
+  }
+
+  _showMarkdown(md) {
+    const sec = this._c.querySelector('#run-report-section');
+    const el  = this._c.querySelector('#report-markdown');
+    this._c.querySelector('#report-structured').innerHTML = '';
+    el.dataset.raw = md;
+    el.innerHTML   = this._md(md);
+    el.classList.remove('hidden');
+    sec.classList.remove('hidden');
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  _appendLog(line, type = 'default') {
+    const box = this._c.querySelector('#log-box');
+    if (!line || !box) return;
+    const div = document.createElement('div');
+    div.className = 'text-xs leading-relaxed font-mono';
+    const colors = {
+      info:    '#6ee7b7', error: '#fca5a5',
+      warn:    '#fcd34d', default: '#d1fae5',
+    };
+    let col = colors.default;
+    if (/✅|成功|完成/.test(line))      col = colors.info;
+    else if (/❌|失败|ERROR/.test(line)) col = colors.error;
+    else if (/⚠|WARNING/.test(line))    col = colors.warn;
+    div.style.color = col;
+    div.textContent = line;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  _disableBtns() {
+    ['#btn-deep','#btn-market','#btn-full'].forEach(s =>
+      this._c.querySelector(s) && (this._c.querySelector(s).disabled = true));
+  }
+  _resetBtns() {
+    ['#btn-deep','#btn-market','#btn-full'].forEach(s =>
+      this._c.querySelector(s) && (this._c.querySelector(s).disabled = false));
+  }
+
+  _md(md) {
+    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return md.split('\n').map(l => {
+      if (/^### (.+)/.test(l)) return `<h3 class="font-bold mt-3 mb-1 text-sm">${esc(l.slice(4))}</h3>`;
+      if (/^## (.+)/.test(l))  return `<h2 class="font-bold mt-4 mb-2 text-base border-b pb-1">${esc(l.slice(3))}</h2>`;
+      if (/^# (.+)/.test(l))   return `<h1 class="font-bold mt-5 mb-2 text-lg">${esc(l.slice(2))}</h1>`;
+      if (/^---+$/.test(l))    return '<hr class="my-3 border-gray-200"/>';
+      if (/^[-*] (.+)/.test(l)) return `<p class="ml-4">• ${esc(l.slice(2))}</p>`;
+      if (!l.trim()) return '<br/>';
+      let h = esc(l);
+      h = h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+      h = h.replace(/`(.+?)`/g,'<code class="bg-gray-100 px-1 rounded text-blue-700 text-xs">$1</code>');
+      return `<p>${h}</p>`;
+    }).join('\n');
+  }
+}
+
+// ── js/app.js ──────────────────────────
+/**
+ * app.js — 主入口：Tab 路由 + 服务状态轮询 + 底栏 + Modal
+ */
+
+const SERVER_APP = 'http://127.0.0.1:7788';
+
+const TABS = [
+  { id: 'run',       icon: '▶',  label: '立即运行', Cls: RunTab },
+  { id: 'watchlist', icon: '☰',  label: '选股',     Cls: WatchlistTab },
+  { id: 'settings',  icon: '⚙', label: '设置',     Cls: SettingsTab },
+  { id: 'guide',     icon: '?',  label: '说明',     Cls: GuideTab },
+];
+
+class App {
+  constructor() {
+    this._instances = {};
+    this._activeId  = 'run';
+    this._online    = false;
+  }
+
+  init() {
+    this._buildNav();
+    this._buildPanels();
+    modal.init(store, SERVER_APP, toast);
+    this._bindSave();
+    this._bindFooter();
+    this._pollServer();
+    this._restoreTab();
+  }
+
+  // ── Nav ─────────────────────────────────────────────────
+  _buildNav() {
+    const nav = document.getElementById('tab-nav');
+    TABS.forEach(({ id, icon, label }) => {
+      const btn = document.createElement('button');
+      btn.id = `nav-${id}`;
+      btn.className = 'nav-tab flex-1 flex items-center justify-center gap-1 py-1.5 text-xs font-medium text-gray-500 rounded-lg';
+      btn.innerHTML = `<span>${icon}</span><span>${label}</span>`;
+      btn.addEventListener('click', () => this._switchTab(id));
+      nav.appendChild(btn);
+    });
+  }
+
+  _buildPanels() {
+    const content = document.getElementById('tab-content');
+    TABS.forEach(({ id, Cls }) => {
+      const panel = document.createElement('div');
+      panel.id = `panel-${id}`;
+      panel.className = 'tab-panel';
+      content.appendChild(panel);
+      const inst = new Cls(panel, store, toast);
+      inst.init();
+      this._instances[id] = inst;
+    });
+  }
+
+  _switchTab(id) {
+    this._activeId = id;
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(b => b.classList.remove('active'));
+    document.getElementById(`panel-${id}`)?.classList.add('active');
+    document.getElementById(`nav-${id}`)?.classList.add('active');
+    try { sessionStorage.setItem('dsa_tab', id); } catch {}
+  }
+
+  _restoreTab() {
+    const saved = (() => { try { return sessionStorage.getItem('dsa_tab'); } catch {} })();
+    this._switchTab(TABS.some(t => t.id === saved) ? saved : 'run');
+  }
+
+  // ── Server poll ─────────────────────────────────────────
+  async _pollServer() {
+    const check = async () => {
+      let ok = false;
+      try {
+        const r = await fetch(`${SERVER_APP}/health`, { signal: AbortSignal.timeout(1500) });
+        ok = r.ok;
+      } catch {}
+      if (ok !== this._online) {
+        this._online = ok;
+        this._updateStatusUI(ok);
+        // 通知 RunTab
+        this._instances['run']?.setServerStatus?.(ok);
+      }
+    };
+    await check();
+    setInterval(check, 5000);
+  }
+
+  _updateStatusUI(online) {
+    const dot   = document.getElementById('status-dot');
+    const label = document.getElementById('status-label');
+    if (!dot || !label) return;
+    dot.className   = `status-dot ${online ? 'online' : 'offline'}`;
+    label.textContent = online ? '本地服务在线' : '纯静态模式';
+    label.className   = `text-xs ${online ? 'text-green-600 font-medium' : 'text-gray-400'}`;
+    // 通知 modal
+    modal.setServerOnline(online);
+  }
+
+  // ── Footer ───────────────────────────────────────────────
+  _bindFooter() {
+    store.subscribe(() => {
+      const el = document.getElementById('footer-time');
+      if (!el) return;
+      el.textContent = `上次编辑 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+    });
+  }
+
+  _bindSave() {
+    document.getElementById('btn-save')?.addEventListener('click', () => {
+      modal.show(store.toJSON());
+    });
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => new App().init());
+</script>
+</body>
+</html>

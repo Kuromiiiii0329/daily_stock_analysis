@@ -1,0 +1,225 @@
+name: Portal 每日股票分析
+
+on:
+  schedule:
+    - cron: '0 10 * * 1-5'   # 周一至周五 UTC 10:00 = 北京时间 18:00
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: '强制运行（跳过交易日检查）'
+        required: false
+        default: false
+        type: boolean
+
+# 独立 concurrency group，与原有 stock-analysis workflow 互不干扰
+concurrency:
+  group: portal-analysis
+  cancel-in-progress: false
+
+jobs:
+  analyze-and-notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: 随机延迟（避免固定时间大量访问）
+        run: sleep $((RANDOM % 60))
+
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 创建必要目录
+        run: mkdir -p data logs reports
+
+      - name: 读取 config/watchlist.json 配置
+        id: read_config
+        run: |
+          echo "=========================================="
+          echo "📋 读取 Portal 配置"
+          echo "=========================================="
+
+          if [ -f "config/watchlist.json" ]; then
+            echo "✅ 找到 config/watchlist.json"
+            cat config/watchlist.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'  股票: {d.get(\"stock_list\",[])} ({len(d.get(\"stock_list\",[]))} 只)')"
+
+            STOCK_LIST=$(python3 -c "import json; d=json.load(open('config/watchlist.json')); print(','.join(d.get('stock_list', ['600519'])))")
+            REPORT_TYPE=$(python3 -c "import json; d=json.load(open('config/watchlist.json')); print(d.get('report_type', 'simple'))")
+            MARKET_REVIEW_ENABLED=$(python3 -c "import json; d=json.load(open('config/watchlist.json')); print(str(d.get('market_review_enabled', True)).lower())")
+            MARKET_REVIEW_REGION=$(python3 -c "import json; d=json.load(open('config/watchlist.json')); print(d.get('market_review_region', 'cn'))")
+            ANALYSIS_DELAY=$(python3 -c "import json; d=json.load(open('config/watchlist.json')); print(d.get('analysis_delay', 0))")
+            MAX_WORKERS=$(python3 -c "import json; d=json.load(open('config/watchlist.json')); print(d.get('max_workers', 1))")
+            FORCE_RUN_JSON=$(python3 -c "import json; d=json.load(open('config/watchlist.json')); print(str(d.get('force_run', False)).lower())")
+          else
+            echo "⚠️  config/watchlist.json 不存在，回退到 vars.STOCK_LIST"
+            STOCK_LIST="${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600519' }}"
+            REPORT_TYPE="${{ vars.REPORT_TYPE || 'simple' }}"
+            MARKET_REVIEW_ENABLED="true"
+            MARKET_REVIEW_REGION="cn"
+            ANALYSIS_DELAY="0"
+            MAX_WORKERS="1"
+            FORCE_RUN_JSON="false"
+          fi
+
+          # workflow_dispatch force_run 参数优先于 JSON 设置
+          if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
+            FORCE_RUN_JSON="true"
+            echo "⚡ 手动触发：强制运行模式已启用"
+          fi
+
+          # 写入 GITHUB_ENV 供后续步骤使用
+          echo "PORTAL_STOCK_LIST=$STOCK_LIST"           >> $GITHUB_ENV
+          echo "PORTAL_REPORT_TYPE=$REPORT_TYPE"         >> $GITHUB_ENV
+          echo "PORTAL_MARKET_REVIEW=$MARKET_REVIEW_ENABLED" >> $GITHUB_ENV
+          echo "PORTAL_MARKET_REGION=$MARKET_REVIEW_REGION"  >> $GITHUB_ENV
+          echo "PORTAL_ANALYSIS_DELAY=$ANALYSIS_DELAY"   >> $GITHUB_ENV
+          echo "PORTAL_MAX_WORKERS=$MAX_WORKERS"          >> $GITHUB_ENV
+          echo "PORTAL_FORCE_RUN=$FORCE_RUN_JSON"        >> $GITHUB_ENV
+
+          echo ""
+          echo "  自选股:   $STOCK_LIST"
+          echo "  报告类型: $REPORT_TYPE"
+          echo "  大盘复盘: $MARKET_REVIEW_ENABLED ($MARKET_REVIEW_REGION)"
+          echo "  并发数:   $MAX_WORKERS"
+          echo "  强制运行: $FORCE_RUN_JSON"
+
+      - name: 执行股票分析
+        env:
+          # === 从 watchlist.json 注入的参数 ===
+          STOCK_LIST: ${{ env.PORTAL_STOCK_LIST }}
+          REPORT_TYPE: ${{ env.PORTAL_REPORT_TYPE }}
+          MARKET_REVIEW_ENABLED: ${{ env.PORTAL_MARKET_REVIEW }}
+          MARKET_REVIEW_REGION: ${{ env.PORTAL_MARKET_REGION }}
+          ANALYSIS_DELAY: ${{ env.PORTAL_ANALYSIS_DELAY }}
+          MAX_WORKERS: ${{ env.PORTAL_MAX_WORKERS }}
+
+          # === AI 模型（来自 GitHub Secrets/Variables）===
+          LITELLM_CONFIG: ${{ vars.LITELLM_CONFIG || secrets.LITELLM_CONFIG }}
+          LITELLM_CONFIG_YAML: ${{ vars.LITELLM_CONFIG_YAML || secrets.LITELLM_CONFIG_YAML }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || secrets.LITELLM_MODEL }}
+          LITELLM_FALLBACK_MODELS: ${{ vars.LITELLM_FALLBACK_MODELS || secrets.LITELLM_FALLBACK_MODELS }}
+          LLM_CHANNELS: ${{ vars.LLM_CHANNELS || secrets.LLM_CHANNELS }}
+          LLM_TEMPERATURE: ${{ vars.LLM_TEMPERATURE || secrets.LLM_TEMPERATURE }}
+
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3-flash-preview' }}
+
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || secrets.OPENAI_MODEL }}
+
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
+          ANSPIRE_API_KEYS: ${{ secrets.ANSPIRE_API_KEYS }}
+
+          # LLM 多渠道（常用渠道）
+          LLM_PRIMARY_API_KEY: ${{ secrets.LLM_PRIMARY_API_KEY }}
+          LLM_PRIMARY_BASE_URL: ${{ vars.LLM_PRIMARY_BASE_URL || secrets.LLM_PRIMARY_BASE_URL }}
+          LLM_PRIMARY_MODELS: ${{ vars.LLM_PRIMARY_MODELS || secrets.LLM_PRIMARY_MODELS }}
+          LLM_PRIMARY_PROTOCOL: ${{ vars.LLM_PRIMARY_PROTOCOL || secrets.LLM_PRIMARY_PROTOCOL }}
+          LLM_GEMINI_API_KEY: ${{ secrets.LLM_GEMINI_API_KEY }}
+          LLM_GEMINI_API_KEYS: ${{ secrets.LLM_GEMINI_API_KEYS }}
+          LLM_GEMINI_MODELS: ${{ vars.LLM_GEMINI_MODELS || secrets.LLM_GEMINI_MODELS }}
+          LLM_DEEPSEEK_API_KEY: ${{ secrets.LLM_DEEPSEEK_API_KEY }}
+          LLM_DEEPSEEK_MODELS: ${{ vars.LLM_DEEPSEEK_MODELS || secrets.LLM_DEEPSEEK_MODELS }}
+          LLM_ANTHROPIC_API_KEY: ${{ secrets.LLM_ANTHROPIC_API_KEY }}
+          LLM_ANTHROPIC_MODELS: ${{ vars.LLM_ANTHROPIC_MODELS || secrets.LLM_ANTHROPIC_MODELS }}
+
+          # === 数据源 ===
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
+          ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || 'false' }}
+
+          # === 搜索服务 ===
+          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+          SEARXNG_BASE_URLS: ${{ secrets.SEARXNG_BASE_URLS }}
+          SEARXNG_PUBLIC_INSTANCES_ENABLED: ${{ vars.SEARXNG_PUBLIC_INSTANCES_ENABLED || 'true' }}
+
+          # === 系统参数 ===
+          LOG_LEVEL: INFO
+          BACKTEST_ENABLED: false
+          TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || 'true' }}
+
+        run: |
+          echo "=========================================="
+          echo "🚀 Portal 股票分析启动"
+          echo "=========================================="
+          echo "⏰ $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') (北京时间)"
+          echo "📊 自选股: $STOCK_LIST"
+          echo "📝 报告类型: $REPORT_TYPE"
+          echo "=========================================="
+
+          # 处理 LITELLM YAML 配置
+          if [ -n "$LITELLM_CONFIG_YAML" ] && [ -n "$LITELLM_CONFIG" ]; then
+            mkdir -p "$(dirname "$LITELLM_CONFIG")"
+            echo "$LITELLM_CONFIG_YAML" > "$LITELLM_CONFIG"
+            echo "📝 LITELLM 配置文件已写入: $LITELLM_CONFIG"
+          fi
+
+          # 构建 force_run 参数
+          FORCE_ARG=""
+          if [ "$PORTAL_FORCE_RUN" = "true" ]; then
+            FORCE_ARG="--force-run"
+            echo "⚡ 强制运行模式（跳过交易日检查）"
+          fi
+
+          # 执行分析（--no-notify：由 send_report.py 统一发邮件）
+          python main.py --no-notify $FORCE_ARG
+
+      - name: 发送邮件报告
+        if: always()
+        env:
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
+          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || 'A股智能分析助手' }}
+        run: |
+          echo "=========================================="
+          echo "📧 发送邮件报告"
+          echo "=========================================="
+          if [ -z "$EMAIL_SENDER" ] || [ -z "$EMAIL_PASSWORD" ]; then
+            echo "⚠️  EMAIL_SENDER 或 EMAIL_PASSWORD 未配置，跳过邮件发送"
+            echo "   请在 GitHub Settings → Secrets 中配置 EMAIL_SENDER 和 EMAIL_PASSWORD"
+            exit 0
+          fi
+          python portal/send_report.py
+
+      - name: 上传分析报告
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: portal-reports-${{ github.run_number }}
+          path: |
+            reports/
+            logs/
+          retention-days: 30
+
+      - name: 显示运行摘要
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "📊 Portal 分析完成"
+          echo "=========================================="
+          echo "⏰ 完成时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') (北京时间)"
+          if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
+            echo "生成的报告文件:"
+            ls -lh reports/
+          else
+            echo "⚠️  未生成报告文件（可能是非交易日）"
+          fi
