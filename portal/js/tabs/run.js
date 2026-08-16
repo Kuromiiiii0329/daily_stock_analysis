@@ -177,6 +177,37 @@ export class RunTab {
             </div>
           </div>
 
+          <!-- 回测卡片 -->
+          <div class="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
+            <div class="px-4 pt-3 pb-2.5 border-b border-gray-50 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <p class="text-sm font-semibold text-gray-800">📈 信号回测</p>
+                <span class="text-xs text-gray-400">基于 K 线历史验证各技术信号胜率</span>
+              </div>
+              <span id="bt-note" class="text-xs text-gray-300">需先运行一次深度分析建立缓存</span>
+            </div>
+            <div class="px-4 py-3 space-y-3">
+              <div class="flex gap-2">
+                <input id="bt-code" type="text" placeholder="股票代码，如 002466" maxlength="12"
+                  class="form-input flex-1 text-sm" autocomplete="off" />
+                <button id="btn-backtest"
+                  class="px-4 py-2 rounded-xl text-xs font-bold transition-all
+                         bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm shadow-emerald-200
+                         active:scale-[.99] disabled:opacity-50 disabled:cursor-not-allowed">
+                  运行回测
+                </button>
+              </div>
+              <!-- 结果区：默认隐藏 -->
+              <div id="bt-result" class="hidden space-y-3">
+                <div id="bt-meta" class="text-xs text-gray-400"></div>
+                <div id="bt-chart" style="height:260px"></div>
+                <div id="bt-table" class="overflow-x-auto"></div>
+              </div>
+              <div id="bt-error" class="hidden text-xs text-red-400 py-2"></div>
+              <div id="bt-loading" class="hidden text-xs text-gray-400 py-2 text-center">⏳ 回测运行中…</div>
+            </div>
+          </div>
+
         </div>
 
         <!-- ══ 子面板 2：日志 ══ -->
@@ -416,6 +447,153 @@ export class RunTab {
       localStorage.removeItem(HISTORY_KEY);
       this._renderHistory();
     });
+
+    // 回测
+    this._c.querySelector('#btn-backtest').addEventListener('click', () => this._runBacktest());
+    this._c.querySelector('#bt-code').addEventListener('keydown', e => {
+      if (e.key === 'Enter') this._runBacktest();
+    });
+    // 同步深度分析的股票代码到回测输入框
+    this._c.querySelector('#run-code').addEventListener('input', e => {
+      const btCode = this._c.querySelector('#bt-code');
+      if (!btCode.value) btCode.value = e.target.value;
+    });
+  }
+
+  // ── 回测 ────────────────────────────────────────────────────────────
+  async _runBacktest() {
+    const code = (this._c.querySelector('#bt-code').value || '').trim();
+    if (!code) { this._t.show('请输入股票代码', 'warning'); return; }
+
+    const loading = this._c.querySelector('#bt-loading');
+    const errEl   = this._c.querySelector('#bt-error');
+    const resEl   = this._c.querySelector('#bt-result');
+    const noteEl  = this._c.querySelector('#bt-note');
+    const btn     = this._c.querySelector('#btn-backtest');
+
+    loading.classList.remove('hidden');
+    errEl.classList.add('hidden');
+    resEl.classList.add('hidden');
+    btn.disabled = true;
+
+    try {
+      const res = await fetch(`${SERVER}/backtest?code=${encodeURIComponent(code)}`);
+      const data = await res.json();
+      loading.classList.add('hidden');
+      btn.disabled = false;
+
+      if (data.error) {
+        errEl.textContent = '❌ ' + data.error;
+        errEl.classList.remove('hidden');
+        noteEl.textContent = '请先对该股票运行一次深度分析';
+        return;
+      }
+      noteEl.textContent = `数据区间：${data.stock_days}  共 ${data.total_days} 个交易日`;
+      this._renderBacktestResult(data);
+    } catch (e) {
+      loading.classList.add('hidden');
+      btn.disabled = false;
+      errEl.textContent = '❌ 请求失败：' + e.message + '（请确认本地服务已启动）';
+      errEl.classList.remove('hidden');
+    }
+  }
+
+  _renderBacktestResult(data) {
+    const resEl   = this._c.querySelector('#bt-result');
+    const metaEl  = this._c.querySelector('#bt-meta');
+    const chartEl = this._c.querySelector('#bt-chart');
+    const tableEl = this._c.querySelector('#bt-table');
+
+    resEl.classList.remove('hidden');
+    metaEl.textContent = `数据区间：${data.stock_days}  共 ${data.total_days} 个交易日`;
+
+    const signals = data.signals || {};
+    const names   = Object.keys(signals).filter(k => signals[k].count > 0);
+    const days    = ['5', '10', '20'];
+    const colors  = { '5': '#3b82f6', '10': '#f59e0b', '20': '#10b981' };
+
+    // ── ECharts 柱状图：各信号 × 三个持有期的胜率 ──────────────
+    if (typeof echarts !== 'undefined' && names.length > 0) {
+      const chart = echarts.init(chartEl);
+      chart.setOption({
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'shadow' },
+          formatter: params => {
+            let s = `<b>${params[0].axisValue}</b><br/>`;
+            params.forEach(p => { s += `${p.marker}${p.seriesName}日胜率：<b>${p.value}%</b><br/>`; });
+            return s;
+          }
+        },
+        legend: {
+          data: days.map(d => d + '日胜率'),
+          textStyle: { fontSize: 11 },
+          bottom: 0,
+        },
+        grid: { left: 10, right: 10, top: 16, bottom: 36, containLabel: true },
+        xAxis: {
+          type: 'category',
+          data: names,
+          axisLabel: { fontSize: 10, rotate: names.length > 5 ? 15 : 0, overflow: 'break', width: 80 },
+        },
+        yAxis: {
+          type: 'value', min: 0, max: 100,
+          axisLabel: { formatter: '{value}%', fontSize: 10 },
+          splitLine: { lineStyle: { color: '#f0f0f0' } },
+        },
+        series: days.map(d => ({
+          name: d + '日胜率',
+          type: 'bar',
+          barGap: '10%',
+          itemStyle: { color: colors[d], borderRadius: [3, 3, 0, 0] },
+          data: names.map(n => signals[n].stats?.[d]?.win_rate ?? 0),
+          label: { show: true, position: 'top', fontSize: 9,
+                   formatter: p => p.value > 0 ? p.value + '%' : '' },
+        })),
+      });
+      window.addEventListener('resize', () => chart.resize());
+    } else {
+      chartEl.innerHTML = '<div class="text-xs text-gray-400 text-center py-8">无信号触发记录</div>';
+    }
+
+    // ── 明细表格 ────────────────────────────────────────────────
+    const rows = names.map(n => {
+      const s = signals[n];
+      const stat = s.stats || {};
+      return `<tr class="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+        <td class="px-3 py-2 text-xs font-medium text-gray-700 whitespace-nowrap">${n}</td>
+        <td class="px-3 py-2 text-xs text-center text-gray-500">${s.count}</td>
+        ${days.map(d => {
+          const w  = stat[d]?.win_rate  ?? '-';
+          const r  = stat[d]?.avg_return ?? '-';
+          const wc = typeof w === 'number' ? (w >= 60 ? 'text-emerald-600 font-semibold' : w < 45 ? 'text-red-500' : 'text-gray-600') : 'text-gray-400';
+          const rc = typeof r === 'number' ? (r > 0 ? 'text-emerald-600' : r < 0 ? 'text-red-500' : 'text-gray-500') : 'text-gray-400';
+          return `<td class="px-2 py-2 text-xs text-center ${wc}">${typeof w === 'number' ? w + '%' : w}</td>
+                  <td class="px-2 py-2 text-xs text-center ${rc}">${typeof r === 'number' ? (r > 0 ? '+' : '') + r + '%' : r}</td>`;
+        }).join('')}
+      </tr>`;
+    }).join('');
+
+    const allZero = names.length === 0;
+    tableEl.innerHTML = allZero
+      ? '<p class="text-xs text-gray-400 text-center py-4">历史数据中未触发任何信号</p>'
+      : `<table class="w-full text-left border-collapse">
+           <thead>
+             <tr class="bg-gray-50 text-xs text-gray-500">
+               <th class="px-3 py-2 font-medium">信号名称</th>
+               <th class="px-3 py-2 font-medium text-center">触发次数</th>
+               ${days.map(d =>
+                 `<th class="px-2 py-2 font-medium text-center" colspan="2">${d} 日持有</th>`
+               ).join('')}
+             </tr>
+             <tr class="bg-gray-50 text-xs text-gray-400 border-b border-gray-100">
+               <th></th><th></th>
+               ${days.map(() => '<th class="px-2 py-1 text-center">胜率</th><th class="px-2 py-1 text-center">均收益</th>').join('')}
+             </tr>
+           </thead>
+           <tbody>${rows}</tbody>
+         </table>
+         <p class="text-xs text-gray-400 mt-2 px-1">胜率≥60% 绿色 · <45% 红色；均收益正负对应涨跌</p>`;
   }
 
   // ── 视图切换（结构化 / Markdown）────────────────────────────────────
