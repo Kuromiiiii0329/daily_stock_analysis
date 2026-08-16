@@ -32,6 +32,7 @@ PORT = int(os.environ.get("PORTAL_SERVER_PORT", 7788))
 
 ALLOWED_ENV_KEYS = {
     "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "LITELLM_MODEL",
+    "HAI_BASE_URL", "HAI_API_KEY", "HAI_MODEL",
     "TUSHARE_TOKEN", "BOCHA_API_KEYS", "TAVILY_API_KEYS", "SERPAPI_API_KEYS",
     "EMAIL_SENDER", "EMAIL_PASSWORD", "EMAIL_RECEIVERS", "EMAIL_SENDER_NAME",
 }
@@ -817,11 +818,40 @@ def _load_dotenv():
 
 
 def _make_llm_caller(log):
-    """构建 LLM 调用函数，复用 litellm。"""
+    """构建 LLM 调用函数，复用 litellm。
+
+    优先级：
+      1. Hai Proxy（SAP 内网 OpenAI 兼容网关）—— HAI_BASE_URL + HAI_API_KEY + HAI_MODEL
+         用于内网直连外部 LLM（DeepSeek/OpenAI）被封锁的场景。
+      2. LITELLM_MODEL / GEMINI / DEEPSEEK / OPENAI（公网直连）
+    """
     try:
         import litellm
 
-        # 从环境变量获取模型名，按优先级尝试
+        # ── 优先：Hai Proxy（内网 OpenAI 兼容网关）──────────────
+        hai_base = os.environ.get("HAI_BASE_URL")
+        hai_key  = os.environ.get("HAI_API_KEY")
+        if hai_base and hai_key:
+            hai_model = os.environ.get("HAI_MODEL", "gpt-4.1")
+            # litellm 用 openai/ 前缀走 OpenAI 兼容协议 + 自定义 api_base
+            model = f"openai/{hai_model}"
+            log(f"🤖 LLM：Hai Proxy（{hai_model} @ {hai_base}）")
+
+            def call_hai(prompt: str) -> str:
+                resp = litellm.completion(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    api_base=hai_base,
+                    api_key=hai_key,
+                    temperature=0.3,
+                    max_tokens=1024,
+                    timeout=60,
+                )
+                return resp.choices[0].message.content or ""
+
+            return call_hai
+
+        # ── 回退：公网直连模型 ──────────────────────────────────
         model = (
             os.environ.get("LITELLM_MODEL")
             or os.environ.get("GEMINI_MODEL")
@@ -831,7 +861,7 @@ def _make_llm_caller(log):
         )
 
         if not model:
-            log("⚠️  未配置 LLM API Key，LLM 相关子模块将跳过")
+            log("⚠️  未配置 LLM（Hai Proxy 或 API Key），LLM 相关子模块将跳过")
             return None
 
         log(f"🤖 LLM 模型：{model}")
