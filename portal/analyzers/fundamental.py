@@ -30,6 +30,8 @@ class FundamentalAnalyzer(BaseAnalyzer):
         "capital_flow":  "主力资金流向",
         "valuation":     "估值水平（PE/PB/市值）",
         "business":      "主营业务（LLM + 搜索）",
+        "northbound":    "北向资金（陆股通）",
+        "holder_change": "大股东增减持",
     }
     DEFAULT_MODULES = ["financials", "growth", "valuation", "capital_flow"]
 
@@ -74,6 +76,10 @@ class FundamentalAnalyzer(BaseAnalyzer):
                 sections.append(self._analyze_valuation(realtime_data))
             if "business" in modules and llm_call:
                 sections.append(self._analyze_business(stock_code, stock_name, llm_call, search))
+            if "northbound" in modules:
+                sections.append(self._analyze_northbound(stock_code))
+            if "holder_change" in modules:
+                sections.append(self._analyze_holder_change(stock_code))
 
         except Exception as e:
             logger.exception("FundamentalAnalyzer section error for %s: %s", stock_code, e)
@@ -288,6 +294,229 @@ class FundamentalAnalyzer(BaseAnalyzer):
         except Exception as e:
             content = f"主营业务分析失败：{e}"
         return Section(key="business", title="主营业务", content=content, score=50, signal="hold")
+
+    def _analyze_northbound(self, stock_code: str) -> Section:
+        """北向资金（陆股通）近20日净流入分析"""
+        try:
+            import akshare as ak
+            df_nb = None
+            # 依次尝试多个可能的 akshare 接口
+            for fn_name, kwargs in [
+                ("stock_hsgt_individual_em",   {"stock": stock_code}),
+                ("stock_hsgt_hist_em",         {"symbol": stock_code}),
+                ("stock_hsgt_north_individual_account_top_10_em", {"symbol": stock_code}),
+            ]:
+                fn = getattr(ak, fn_name, None)
+                if fn is None:
+                    continue
+                try:
+                    df_nb = fn(**kwargs)
+                    if df_nb is not None and not df_nb.empty:
+                        break
+                except Exception:
+                    df_nb = None
+
+            if df_nb is None or df_nb.empty:
+                raise ValueError("所有接口均无数据")
+
+            # 统一找净流入列
+            net_col = None
+            for cand in ["净买入额", "净流入", "net_inflow", "净买入", "成交净买额"]:
+                if cand in df_nb.columns:
+                    net_col = cand
+                    break
+            if net_col is None:
+                # 取最后一个数值列作为净流入
+                num_cols = df_nb.select_dtypes("number").columns.tolist()
+                if not num_cols:
+                    raise ValueError("无法识别净流入列")
+                net_col = num_cols[-1]
+
+            series = df_nb[net_col].tail(20).fillna(0).astype(float)
+            recent5  = series.tail(5)
+            recent20 = series
+
+            sum5  = recent5.sum()
+            sum20 = recent20.sum()
+            # 趋势：连续5日方向
+            consec_in  = (recent5 > 0).all()
+            consec_out = (recent5 < 0).all()
+
+            if consec_in:
+                score = 72
+                trend = "连续5日净流入，北向持续增持"
+            elif consec_out:
+                score = 32
+                trend = "连续5日净流出，北向持续减仓"
+            else:
+                score = 52
+                trend = "近5日北向资金流向混合"
+
+            def _fmt(v):
+                if abs(v) >= 1e8:  return f"{v/1e8:+.2f}亿"
+                if abs(v) >= 1e4:  return f"{v/1e4:+.2f}万"
+                return f"{v:+.2f}"
+
+            lines = [
+                f"**北向资金（陆股通）**",
+                f"- 近5日累计净流入：{_fmt(sum5)}",
+                f"- 近20日累计净流入：{_fmt(sum20)}",
+                f"- 趋势：{trend}",
+            ]
+            content = "\n".join(lines)
+            return Section(key="northbound", title="北向资金", content=content,
+                           score=score, signal=self._score_to_signal(score))
+
+        except Exception as e:
+            logger.warning("northbound analysis error for %s: %s", stock_code, e)
+            return Section(key="northbound", title="北向资金",
+                           content="北向资金数据暂不可用", score=50, signal="hold")
+
+    def _analyze_holder_change(self, stock_code: str) -> Section:
+        """大股东/董监高增减持分析（近90天）"""
+        try:
+            import akshare as ak
+            import pandas as pd
+            from datetime import datetime, timedelta
+
+            df_ht = None
+            for fn_name, kwargs in [
+                ("stock_holdertrade_em",   {"symbol": stock_code}),
+                ("stock_hold_trade_detail_em", {"symbol": stock_code}),
+            ]:
+                fn = getattr(ak, fn_name, None)
+                if fn is None:
+                    continue
+                try:
+                    df_ht = fn(**kwargs)
+                    if df_ht is not None and not df_ht.empty:
+                        break
+                except Exception:
+                    df_ht = None
+
+            if df_ht is None or df_ht.empty:
+                raise ValueError("无增减持数据")
+
+            # 找日期列
+            date_col = None
+            for cand in ["变动截止日", "公告日期", "截止日期", "变动日期", "date"]:
+                if cand in df_ht.columns:
+                    date_col = cand
+                    break
+            cutoff = datetime.now() - timedelta(days=90)
+            if date_col:
+                df_ht[date_col] = pd.to_datetime(df_ht[date_col], errors="coerce")
+                df_ht = df_ht[df_ht[date_col] >= cutoff]
+
+            if df_ht.empty:
+                return Section(key="holder_change", title="大股东增减持",
+                               content="近90天无增减持公告", score=52, signal="hold")
+
+            # 找变动类型列
+            type_col = None
+            for cand in ["变动类型", "增减", "类型", "type"]:
+                if cand in df_ht.columns:
+                    type_col = cand
+                    break
+
+            # 找金额列
+            amt_col = None
+            for cand in ["变动金额", "交易金额", "金额", "变动市值", "amount"]:
+                if cand in df_ht.columns:
+                    amt_col = cand
+                    break
+
+            # 找持有人列（判断是否为大股东/实际控制人/董监高）
+            holder_col = None
+            for cand in ["股东名称", "变动人", "持有人", "holder"]:
+                if cand in df_ht.columns:
+                    holder_col = cand
+                    break
+
+            KEY_ROLES = ("大股东", "实际控制人", "董事", "监事", "高级管理", "总经理", "董事长", "控股")
+
+            def _is_key_role(name: str) -> bool:
+                if not name:
+                    return False
+                return any(kw in str(name) for kw in KEY_ROLES)
+
+            def _parse_type(val: str) -> str:
+                v = str(val)
+                if any(k in v for k in ("减持", "卖出", "减少")):
+                    return "sell"
+                if any(k in v for k in ("增持", "买入", "增加")):
+                    return "buy"
+                return "unknown"
+
+            sell_cnt = buy_cnt = 0
+            sell_amt = buy_amt = 0.0
+            key_sell_amt = key_buy_amt = 0.0
+
+            for _, row in df_ht.iterrows():
+                t = _parse_type(row.get(type_col, "") if type_col else "")
+                amt = 0.0
+                if amt_col:
+                    try:
+                        amt = float(str(row[amt_col]).replace(",", "").replace("万", "")) or 0.0
+                        # 如果单位不是元则换算（简单启发：数值很小时乘以10000）
+                        if amt != 0 and abs(amt) < 100:
+                            amt *= 1e4
+                    except (ValueError, TypeError):
+                        amt = 0.0
+                is_key = _is_key_role(row.get(holder_col, "") if holder_col else "")
+                if t == "sell":
+                    sell_cnt += 1
+                    sell_amt += amt
+                    if is_key:
+                        key_sell_amt += amt
+                elif t == "buy":
+                    buy_cnt += 1
+                    buy_amt += amt
+                    if is_key:
+                        key_buy_amt += amt
+
+            net = buy_amt - sell_amt
+            WEIGHT = 1.5
+            weighted_net = (key_buy_amt - key_sell_amt) * WEIGHT + (
+                (buy_amt - key_buy_amt) - (sell_amt - key_sell_amt)
+            )
+
+            if weighted_net < -1e7:
+                score = 28
+                signal_text = "大股东/董监高净减持超千万，强卖出信号"
+            elif weighted_net > 5e6:
+                score = 70
+                signal_text = "大股东/董监高净增持超五百万，强买入信号"
+            elif sell_cnt == 0 and buy_cnt == 0:
+                score = 52
+                signal_text = "近90天无增减持动作"
+            else:
+                score = 52
+                signal_text = "近90天增减持信号中性"
+
+            def _fmt(v):
+                if abs(v) >= 1e8:  return f"{v/1e8:.2f}亿"
+                if abs(v) >= 1e4:  return f"{v/1e4:.2f}万"
+                return f"{v:.2f}"
+
+            lines = [
+                "**大股东增减持（近90天）**",
+                f"- 减持：{sell_cnt}笔，合计约 {_fmt(sell_amt)}",
+                f"- 增持：{buy_cnt}笔，合计约 {_fmt(buy_amt)}",
+                f"- 净增持：{_fmt(net)}",
+                f"- 信号：{signal_text}",
+            ]
+            if key_sell_amt or key_buy_amt:
+                lines.append(f"- 大股东/实控人/董监高净增持：{_fmt(key_buy_amt - key_sell_amt)}")
+
+            content = "\n".join(lines)
+            return Section(key="holder_change", title="大股东增减持", content=content,
+                           score=score, signal=self._score_to_signal(score))
+
+        except Exception as e:
+            logger.warning("holder_change analysis error for %s: %s", stock_code, e)
+            return Section(key="holder_change", title="大股东增减持",
+                           content="增减持数据暂不可用", score=50, signal="hold")
 
     @staticmethod
     def _fmt_money(val) -> str:

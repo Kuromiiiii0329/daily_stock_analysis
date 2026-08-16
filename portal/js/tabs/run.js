@@ -54,6 +54,7 @@ const DIM_DEFS = {
 const HISTORY_KEY = 'dsa_run_history';
 const HISTORY_MAX = 10;
 const HISTORY_SHOW = 5;
+const REPORT_CACHE_PREFIX = 'dsa_report_';
 
 export class RunTab {
   constructor(container, store, toast) {
@@ -606,7 +607,7 @@ export class RunTab {
       // 从报告中提取评分和信号
       const score  = rpt?.summary?.score  ?? rpt?.score  ?? null;
       const signal = rpt?.summary?.signal ?? rpt?.signal ?? '';
-      this._saveHistory({ code, name: subject, score, signal, taskId });
+      this._saveHistory({ code, name: subject, score, signal, taskId }, rpt);
       // 红点 + 切到报告子面板
       this._c.querySelector('#tab-report-badge')?.classList.remove('hidden');
       this._switchSubTab('report');
@@ -625,7 +626,7 @@ export class RunTab {
     mbox.classList.remove('hidden');
     if (empty) empty.classList.add('hidden');
     this._setViewMode('markdown');
-    this._saveHistory({ code, name: subject, score: null, signal: '', taskId });
+    this._saveHistory({ code, name: subject, score: null, signal: '', taskId }, md);
     // 红点 + 切到报告子面板
     this._c.querySelector('#tab-report-badge')?.classList.remove('hidden');
     this._switchSubTab('report');
@@ -675,7 +676,7 @@ export class RunTab {
 
   // ── 历史记录（localStorage，最多 10 条，显示最近 5 条）──────────────
   // 格式：[{code, name, score, signal, time, taskId}]
-  _saveHistory({ code, name, score, signal, taskId } = {}) {
+  _saveHistory({ code, name, score, signal, taskId } = {}, rpt = null) {
     const list = this._loadHistoryList();
     list.unshift({
       code:   code   || '',
@@ -687,12 +688,37 @@ export class RunTab {
     });
     if (list.length > HISTORY_MAX) list.length = HISTORY_MAX;
     try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch {}
+    // 缓存完整报告 JSON（< 200KB 才写入）
+    if (rpt != null && taskId) {
+      try {
+        const reportStr = JSON.stringify(rpt);
+        if (reportStr.length < 200 * 1024) {
+          try { localStorage.setItem(REPORT_CACHE_PREFIX + taskId, reportStr); } catch(e) {}
+        }
+      } catch(e) {}
+    }
     this._renderHistory();
   }
 
   _loadHistoryList() {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
     catch { return []; }
+  }
+
+  _cleanOldReportCache() {
+    try {
+      const list = this._loadHistoryList();
+      const validIds = new Set(list.map(h => h.taskId).filter(Boolean));
+      const keysToDelete = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(REPORT_CACHE_PREFIX)) {
+          const taskId = key.slice(REPORT_CACHE_PREFIX.length);
+          if (!validIds.has(taskId)) keysToDelete.push(key);
+        }
+      }
+      keysToDelete.forEach(k => localStorage.removeItem(k));
+    } catch(e) {}
   }
 
   _renderHistory() {
@@ -702,6 +728,9 @@ export class RunTab {
     const items = this._loadHistoryList().slice(0, HISTORY_SHOW);
     if (!items.length) { sec.classList.add('hidden'); return; }
     sec.classList.remove('hidden');
+
+    // 清理孤立缓存（历史列表中已不存在的 taskId）
+    this._cleanOldReportCache();
 
     list.innerHTML = items.map((h, i) => {
       const d    = new Date(h.time);
@@ -715,10 +744,15 @@ export class RunTab {
       const label = h.code
         ? `${h.code}${h.name && h.name !== h.code ? ' · ' + h.name : ''}`
         : (h.name || '分析报告');
+      const cached = h.taskId && localStorage.getItem(REPORT_CACHE_PREFIX + h.taskId) != null;
+      const cacheIcon = cached
+        ? `<span title="已缓存，可离线查看" class="shrink-0 text-xs">💾</span>`
+        : `<span title="需联网拉取" class="shrink-0 text-xs">🌐</span>`;
       return `
         <div class="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-xl text-xs text-gray-600
                     hover:bg-gray-100 cursor-pointer transition-colors"
              data-history-idx="${i}">
+          ${cacheIcon}
           ${scoreBadge}
           ${signalBadge}
           <span class="flex-1 font-medium truncate">${label}</span>
@@ -726,15 +760,67 @@ export class RunTab {
         </div>`;
     }).join('');
 
-    // 点击历史条目重新加载报告
+    // 点击历史条目：优先读缓存，否则走网络
     list.querySelectorAll('[data-history-idx]').forEach(row => {
       row.addEventListener('click', () => {
         const idx  = parseInt(row.dataset.historyIdx, 10);
         const item = this._loadHistoryList()[idx];
         if (!item?.taskId) return;
+        const cached = item.taskId && localStorage.getItem(REPORT_CACHE_PREFIX + item.taskId);
+        if (cached) {
+          try {
+            const rpt = JSON.parse(cached);
+            // 判断是结构化 JSON 还是 markdown 字符串
+            if (typeof rpt === 'object' && rpt !== null) {
+              this._lastRtype = 'structured';
+              this._showStructuredFromCache(rpt, item.code, item.name);
+            } else {
+              this._lastRtype = 'markdown';
+              this._showMarkdownFromCache(String(rpt), item.code, item.name);
+            }
+            return;
+          } catch(e) {}
+        }
         this._loadReport(item.taskId, 'structured', item.code, item.name);
       });
     });
+  }
+
+  // 从缓存渲染结构化报告（不重新写历史、不重新缓存）
+  _showStructuredFromCache(rpt, code = '', subject = '') {
+    try {
+      this._lastRawReport = rpt;
+      const sbox  = this._c.querySelector('#report-structured');
+      const mbox  = this._c.querySelector('#report-markdown');
+      const empty = this._c.querySelector('#report-empty');
+      sbox.classList.remove('hidden');
+      mbox.classList.add('hidden');
+      mbox.dataset.raw = '';
+      if (empty) empty.classList.add('hidden');
+      this._report.render(rpt);
+      this._setViewMode('structured');
+      this._t.show('(已缓存)', 'success');
+      this._c.querySelector('#tab-report-badge')?.classList.remove('hidden');
+      this._switchSubTab('report');
+    } catch(e) { this._t.show('缓存解析失败', 'warning'); }
+  }
+
+  // 从缓存渲染 markdown 报告
+  _showMarkdownFromCache(md, code = '', subject = '') {
+    const sbox  = this._c.querySelector('#report-structured');
+    const mbox  = this._c.querySelector('#report-markdown');
+    const empty = this._c.querySelector('#report-empty');
+    this._lastRawReport = md;
+    sbox.innerHTML = '';
+    sbox.classList.add('hidden');
+    mbox.dataset.raw = md;
+    mbox.innerHTML = this._md(md);
+    mbox.classList.remove('hidden');
+    if (empty) empty.classList.add('hidden');
+    this._setViewMode('markdown');
+    this._t.show('(已缓存)', 'success');
+    this._c.querySelector('#tab-report-badge')?.classList.remove('hidden');
+    this._switchSubTab('report');
   }
 
   // ── 按钮状态 ──────────────────────────────────────────────────────────

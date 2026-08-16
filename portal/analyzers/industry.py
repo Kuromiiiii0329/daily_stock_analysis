@@ -21,6 +21,20 @@ from .base import BaseAnalyzer, DimensionResult, Section
 
 logger = logging.getLogger(__name__)
 
+# ── 大宗商品期货代码映射（akshare futures_main_sina 使用）────────
+COMMODITY_FUTURES_MAP = {
+    "碳酸锂": "LC",   # 碳酸锂期货
+    "锂": "LC",
+    "铜": "CU",
+    "铝": "AL",
+    "钢": "RB",     # 螺纹钢
+    "煤": "ZC",     # 郑煤
+    "原油": "SC",
+    "石油": "SC",
+    "黄金": "AU",
+    "白银": "AG",
+}
+
 # ── 内置产业链关键词模板（LLM 生成失败时的降级方案）────────────
 INDUSTRY_KEYWORDS_FALLBACK = {
     "锂": ["碳酸锂价格", "锂矿供需", "新能源电池产业链"],
@@ -173,11 +187,38 @@ class IndustryAnalyzer(BaseAnalyzer):
         return [f"{stock_name}行业景气", f"{stock_name}竞争格局", f"{stock_name}政策动向"]
 
     # ── 各子模块 ─────────────────────────────────────────────
+    def _get_commodity_price(self, keyword: str) -> str:
+        """根据关键词查期货主力合约最新价，返回格式化字符串，失败返回空字符串。"""
+        code = None
+        for key, futures_code in COMMODITY_FUTURES_MAP.items():
+            if key in keyword:
+                code = futures_code
+                break
+        if not code:
+            return ""
+        try:
+            import akshare as ak
+            df = ak.futures_main_sina(symbol=code)
+            if df is None or df.empty:
+                return ""
+            # 取最新一行
+            latest = df.iloc[-1]
+            price = float(latest.get("收盘价", latest.get("close", 0)))
+            date  = str(latest.get("日期", latest.get("date", "")))[:10]
+            if price <= 0:
+                return ""
+            return f"{keyword}：{price:.0f} 元/吨（{date}）"
+        except Exception as e:
+            logger.debug("_get_commodity_price %s(%s) error: %s", keyword, code, e)
+            return ""
+
     def _analyze_commodity(self, stock_name, keywords, search_context, llm_call) -> Section:
+        price_lines = [self._get_commodity_price(kw) for kw in keywords[:3]]
+        price_text  = "\n".join(l for l in price_lines if l)
         context_text = self._build_context(search_context, keywords[:3])
         prompt = f"""你是商品市场分析师。
 请基于以下信息，分析与 {stock_name} 最相关的大宗商品/核心产品价格走势：
-
+{"【实时期货价格】\n" + price_text + "\n\n" if price_text else ""}
 {context_text if context_text else f"无实时搜索数据，请基于你的知识分析 {stock_name} 相关产品价格走势。"}
 
 请输出（不超过200字）：

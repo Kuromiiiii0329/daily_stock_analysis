@@ -156,6 +156,17 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/env":
             self._handle_get_env()
 
+        elif path == "/quote":
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            self._handle_quote(qs)
+
+        elif path == "/backtest":
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            code = (qs.get("code", [""])[0]).strip().upper()
+            self._handle_backtest(code)
+
         elif path.startswith("/run/stream/"):
             task_id = path.split("/run/stream/")[-1]
             self._handle_sse(task_id)
@@ -468,6 +479,106 @@ class Handler(BaseHTTPRequestHandler):
         logger.info("✅ .env 已更新，keys: %s", list(safe_updates.keys()))
         self._send_json(200, {"ok": True, "updated": list(safe_updates.keys())})
 
+    def _handle_quote(self, params: dict):
+        """GET /quote?codes=600519,300750 — 返回股票实时行情（名称、现价、涨跌幅）。"""
+        codes_raw = params.get("codes", [""])[0]
+        codes = [c.strip() for c in codes_raw.split(",") if c.strip()]
+        if not codes:
+            self._send_json(400, {"ok": False, "error": "缺少 codes 参数"})
+            return
+
+        result = []
+
+        # ── 优先：akshare 全市场实时行情 ─────────────────────
+        try:
+            import akshare as ak
+            df = ak.stock_zh_a_spot_em()
+            # 列名示例：代码 名称 最新价 涨跌幅 成交量 ...
+            col_map = {
+                "代码":   "code",
+                "名称":   "name",
+                "最新价": "price",
+                "涨跌幅": "pct_chg",
+                "成交量": "volume",
+            }
+            df = df.rename(columns=col_map)
+            df["code"] = df["code"].astype(str).str.strip()
+            df_idx = df.set_index("code")
+
+            for code in codes:
+                if code in df_idx.index:
+                    row = df_idx.loc[code]
+                    def _safe(v):
+                        try:
+                            f = float(v)
+                            return None if (f != f) else f  # NaN → None
+                        except Exception:
+                            return None
+                    result.append({
+                        "code":    code,
+                        "name":    str(row.get("name", code)),
+                        "price":   _safe(row.get("price")),
+                        "pct_chg": _safe(row.get("pct_chg")),
+                        "volume":  _safe(row.get("volume")),
+                    })
+                else:
+                    result.append({"code": code, "name": None, "price": None, "pct_chg": None, "volume": None})
+
+            self._send_json(200, {"ok": True, "quotes": result})
+            return
+
+        except Exception as e:
+            logger.warning("akshare 获取行情失败，降级读取缓存: %s", e)
+
+        # ── 降级：从 data_cache meta.json 读取 name ───────────
+        try:
+            from portal.data_cache import StockDataCache
+            cache = StockDataCache()
+        except Exception:
+            cache = None
+
+        for code in codes:
+            name = None
+            if cache:
+                try:
+                    meta = cache.get_meta(code)
+                    if meta:
+                        name = meta.get("name")
+                except Exception:
+                    pass
+            result.append({"code": code, "name": name, "price": None, "pct_chg": None, "volume": None})
+
+        self._send_json(200, {"ok": True, "quotes": result})
+
+    def _handle_backtest(self, code: str):
+        """GET /backtest?code=xxx — 对指定股票的K线缓存运行回测，返回信号胜率统计。"""
+        if not code:
+            self._send_json(400, {"ok": False, "error": "缺少 code 参数"})
+            return
+        try:
+            from portal.data_cache import StockDataCache
+            df = StockDataCache().get_kline(code)
+        except Exception as e:
+            self._send_json(500, {"ok": False, "error": f"读取缓存失败：{e}"})
+            return
+
+        if df is None or df.empty:
+            self._send_json(404, {
+                "ok": False,
+                "error": "请先对该股票执行一次深度分析以建立K线缓存"
+            })
+            return
+
+        try:
+            from portal.backtester import run_backtest
+            result = run_backtest(df)
+        except Exception as e:
+            logger.exception("backtest error for %s: %s", code, e)
+            self._send_json(500, {"ok": False, "error": f"回测执行失败：{e}"})
+            return
+
+        self._send_json(200, {"ok": True, "code": code, "backtest": result})
+
 
 # ── 深度分析后台任务 ──────────────────────────────────────────
 def _run_deep_analysis_task(
@@ -545,6 +656,60 @@ def _run_deep_analysis_task(
         from portal.analyzers.merger import merge_results
         final_report = merge_results(stock_code, stock_name, results, llm_call)
         log(f"🎯 综合评分={final_report['overall_score']}，信号={final_report['overall_signal_label']}")
+
+        # ── 注入 K线数据（最近60条 date/close/ma5/ma20）────────
+        if df is not None and not df.empty:
+            try:
+                kline_df = df.copy()
+                # 统一列名
+                col_map = {}
+                for c in kline_df.columns:
+                    lc = c.lower()
+                    if lc in ('trade_date', 'tradedate', 'date'):
+                        col_map[c] = 'date'
+                    elif lc == 'close':
+                        col_map[c] = 'close'
+                    elif lc == 'ma5':
+                        col_map[c] = 'ma5'
+                    elif lc == 'ma20':
+                        col_map[c] = 'ma20'
+                kline_df = kline_df.rename(columns=col_map)
+
+                # 如果缺少 ma5/ma20，现场计算
+                if 'close' in kline_df.columns:
+                    if 'ma5' not in kline_df.columns:
+                        kline_df['ma5'] = kline_df['close'].rolling(5, min_periods=1).mean().round(2)
+                    if 'ma20' not in kline_df.columns:
+                        kline_df['ma20'] = kline_df['close'].rolling(20, min_periods=1).mean().round(2)
+
+                keep_cols = [c for c in ('date', 'close', 'ma5', 'ma20') if c in kline_df.columns]
+                kline_df = kline_df[keep_cols].tail(60)
+
+                # 序列化为干净的 list[dict]，NaN → None
+                kline_records = []
+                for row in kline_df.to_dict(orient='records'):
+                    cleaned = {}
+                    for k, v in row.items():
+                        if v is None:
+                            cleaned[k] = None
+                        elif isinstance(v, float) and v != v:  # NaN
+                            cleaned[k] = None
+                        elif hasattr(v, 'item'):  # numpy scalar
+                            raw = v.item()
+                            cleaned[k] = str(raw) if k == 'date' else round(float(raw), 2)
+                        elif isinstance(v, float):
+                            cleaned[k] = round(v, 2)
+                        else:
+                            cleaned[k] = str(v) if k == 'date' else v
+                    kline_records.append(cleaned)
+
+                final_report['kline_data'] = kline_records
+                log(f"📊 K线数据已注入报告（{len(kline_records)} 条）")
+            except Exception as e:
+                logger.warning("注入 kline_data 失败: %s", e)
+                final_report['kline_data'] = []
+        else:
+            final_report['kline_data'] = []
 
         # ── 保存元信息到缓存 ──────────────────────────────────
         try:

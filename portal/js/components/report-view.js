@@ -36,17 +36,17 @@ export class ReportView {
     const sig = SIGNAL_CONFIG[overall_signal] || SIGNAL_CONFIG.hold;
 
     this._container.innerHTML = `
-      <!-- 报告头部 -->
+      <!-- 报告头部：左侧股票信息 + 右侧雷达图 -->
       <div class="mb-5 p-4 rounded-xl bg-gradient-to-r from-gray-50 to-blue-50 border border-gray-200">
         <div class="flex items-center justify-between flex-wrap gap-3">
+          <!-- 左侧：股票名称/代码/时间 -->
           <div>
             <span class="font-bold text-xl text-gray-900">${this._esc(stock_name)}</span>
             <span class="ml-2 font-mono text-sm text-gray-500">${this._esc(stock_code)}</span>
+            <div class="mt-1 text-xs text-gray-400">${this._fmtTime(generated_at)}</div>
           </div>
-          <div class="flex items-center gap-3">
-            ${this._scoreBadge(overall_score, overall_signal)}
-            <span class="text-xs text-gray-400">${this._fmtTime(generated_at)}</span>
-          </div>
+          <!-- 右侧：ECharts 雷达图 -->
+          <div id="radar-chart" style="width:220px;height:160px;flex-shrink:0"></div>
         </div>
       </div>
 
@@ -76,25 +76,38 @@ export class ReportView {
     if (techDims.length) {
       const col = document.createElement('div');
       col.className = 'space-y-4';
-      techDims.forEach(d => col.appendChild(this._renderDimension(d)));
+      techDims.forEach(d => col.appendChild(this._renderDimension(d, report)));
       colContainer.appendChild(col);
     }
 
     if (otherDims.length) {
       const col = document.createElement('div');
       col.className = 'space-y-4';
-      otherDims.forEach(d => col.appendChild(this._renderDimension(d)));
+      otherDims.forEach(d => col.appendChild(this._renderDimension(d, report)));
       colContainer.appendChild(col);
     }
+
+    // 延迟初始化图表（等 DOM 渲染完毕）
+    setTimeout(() => {
+      this._initRadar(report);
+      this._initKlineChart(report);
+    }, 0);
   }
 
-  _renderDimension(dim) {
+  _renderDimension(dim, report) {
     const sig  = SIGNAL_CONFIG[dim.signal] || SIGNAL_CONFIG.hold;
     const icon = DIM_ICONS[dim.dimension] || '📋';
 
     const el = document.createElement('div');
     el.className = 'bg-white border border-gray-200 rounded-xl overflow-hidden';
+
+    // 技术面且有 kline_data：在卡片顶部插入折线图占位
+    const klineHtml = (dim.dimension === 'technical' && report && report.kline_data)
+      ? `<div id="kline-chart-${this._esc(report.stock_code)}" style="height:180px;padding:4px 0"></div>`
+      : '';
+
     el.innerHTML = `
+      ${klineHtml}
       <!-- 维度头部 -->
       <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-100">
         <div class="flex items-center gap-2">
@@ -151,6 +164,137 @@ export class ReportView {
       el.setAttribute('open', '');
     }
     return el;
+  }
+
+  _initRadar(rpt) {
+    const el = this._container.querySelector('#radar-chart');
+    if (!el || typeof echarts === 'undefined') return;
+
+    // 销毁旧实例（如果有）
+    const existing = echarts.getInstanceByDom(el);
+    if (existing) existing.dispose();
+
+    const chart = echarts.init(el);
+
+    // 从 dimensions 取各维度评分
+    const dimScores = {};
+    (rpt.dimensions || []).forEach(d => { dimScores[d.dimension] = d.score; });
+
+    const techScore  = dimScores['technical']   ?? 0;
+    const fundScore  = dimScores['fundamental'] ?? 0;
+    const indScore   = dimScores['industry']    ?? 0;
+
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'item',
+        formatter: (params) => {
+          const vals = params.value;
+          return `技术面: ${vals[0]}<br/>基本面: ${vals[1]}<br/>产业链: ${vals[2]}`;
+        },
+      },
+      radar: {
+        indicator: [
+          { name: '技术面', max: 100 },
+          { name: '基本面', max: 100 },
+          { name: '产业链', max: 100 },
+        ],
+        center: ['50%', '50%'],
+        radius: '70%',
+        axisName: { fontSize: 11, color: '#374151' },
+        splitLine: { lineStyle: { color: '#e5e7eb' } },
+        splitArea: { areaStyle: { color: ['rgba(239,246,255,0.3)', 'rgba(255,255,255,0)'] } },
+        axisLine: { lineStyle: { color: '#d1d5db' } },
+      },
+      series: [{
+        type: 'radar',
+        data: [{
+          value: [techScore, fundScore, indScore],
+          name: '评分',
+          itemStyle: { color: '#3b82f6' },
+          lineStyle: { color: '#3b82f6', width: 2 },
+          areaStyle: { color: 'rgba(59,130,246,0.18)' },
+          symbol: 'circle',
+          symbolSize: 5,
+        }],
+      }],
+    });
+  }
+
+  _initKlineChart(rpt) {
+    if (!rpt.kline_data || !rpt.kline_data.length) return;
+    if (typeof echarts === 'undefined') return;
+
+    const el = this._container.querySelector(`#kline-chart-${rpt.stock_code}`);
+    if (!el) return;
+
+    const existing = echarts.getInstanceByDom(el);
+    if (existing) existing.dispose();
+
+    const chart = echarts.init(el);
+
+    // 取最近60条
+    const data = rpt.kline_data.slice(-60);
+
+    const dates  = data.map(d => d.date ? d.date.slice(5) : '');  // MM-DD
+    const close  = data.map(d => d.close  ?? null);
+    const ma5    = data.map(d => d.ma5    ?? null);
+    const ma20   = data.map(d => d.ma20   ?? null);
+
+    const makeLineSeries = (name, values, color, lineWidth = 1.5) => ({
+      name,
+      type: 'line',
+      data: values,
+      smooth: false,
+      symbol: 'none',
+      lineStyle: { color, width: lineWidth },
+      itemStyle: { color },
+    });
+
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross', crossStyle: { color: '#9ca3af' } },
+        textStyle: { fontSize: 11 },
+        formatter: (params) => {
+          const idx = params[0].dataIndex;
+          const date = data[idx]?.date || '';
+          let html = `<div style="font-size:11px"><b>${date}</b></div>`;
+          params.forEach(p => {
+            if (p.value != null) {
+              html += `<div style="color:${p.color}">${p.seriesName}: ${Number(p.value).toFixed(2)}</div>`;
+            }
+          });
+          return html;
+        },
+      },
+      legend: {
+        data: ['收盘价', 'MA5', 'MA20'],
+        right: 8, top: 2,
+        textStyle: { fontSize: 10, color: '#6b7280' },
+        itemWidth: 12, itemHeight: 3,
+      },
+      grid: { left: 8, right: 8, top: 28, bottom: 20, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        axisLabel: { fontSize: 9, color: '#9ca3af', interval: Math.floor(data.length / 6) },
+        axisLine: { lineStyle: { color: '#e5e7eb' } },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        axisLabel: { fontSize: 9, color: '#9ca3af', formatter: v => v.toFixed(1) },
+        splitLine: { lineStyle: { color: '#f3f4f6' } },
+      },
+      series: [
+        makeLineSeries('收盘价', close, '#3b82f6', 2),
+        makeLineSeries('MA5',   ma5,   '#f97316', 1),
+        makeLineSeries('MA20',  ma20,  '#ef4444', 1),
+      ],
+    });
   }
 
   _scoreBadge(score, signal, size = 'md') {
