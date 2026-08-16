@@ -187,7 +187,7 @@
 <!-- ══════════════ JS ══════════════ -->
 <script>
 
-// ── js/components/toast.js ──────────────────────────
+// ── js/components/toast.js ──────────────────────────────
 /**
  * components/toast.js — 轻量通知条
  */
@@ -211,7 +211,7 @@ class Toast {
 }
 const toast = new Toast();
 
-// ── js/components/modal.js ──────────────────────────
+// ── js/components/modal.js ──────────────────────────────
 /**
  * components/modal.js — 保存配置弹窗
  */
@@ -317,7 +317,7 @@ class Modal {
 
 const modal = new Modal();
 
-// ── js/components/report-view.js ──────────────────────────
+// ── js/components/report-view.js ──────────────────────────────
 /**
  * components/report-view.js — 双栏结构化报告渲染组件
  *
@@ -534,7 +534,7 @@ class ReportView {
   }
 }
 
-// ── js/store.js ──────────────────────────
+// ── js/store.js ──────────────────────────────
 /**
  * store.js — 全局状态管理 + localStorage 持久化
  */
@@ -621,7 +621,7 @@ class Store {
 
 const store = new Store();
 
-// ── js/tabs/watchlist.js ──────────────────────────
+// ── js/tabs/watchlist.js ──────────────────────────────
 /**
  * tabs/watchlist.js — 选股管理（纯静态，无需 server）
  */
@@ -696,7 +696,7 @@ class WatchlistTab {
   _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 }
 
-// ── js/tabs/settings.js ──────────────────────────
+// ── js/tabs/settings.js ──────────────────────────────
 /**
  * tabs/settings.js — 分析参数设置（纯静态，无需 server）
  * Toggle 用 JS 驱动，不依赖 Tailwind peer（innerHTML 里 peer 无效）
@@ -867,7 +867,7 @@ class SettingsTab {
   }
 }
 
-// ── js/tabs/guide.js ──────────────────────────
+// ── js/tabs/guide.js ──────────────────────────────
 /**
  * tabs/guide.js — 使用说明（纯静态）
  */
@@ -983,7 +983,7 @@ class GuideTab {
   }
 }
 
-// ── js/tabs/run.js ──────────────────────────
+// ── js/tabs/run.js ──────────────────────────────
 /**
  * tabs/run.js — 立即运行分析
  *
@@ -1508,7 +1508,7 @@ class RunTab {
   }
 }
 
-// ── js/app.js ──────────────────────────
+// ── js/app.js ──────────────────────────────
 /**
  * app.js — 主入口：Tab 路由 + 服务状态轮询 + 底栏 + Modal
  */

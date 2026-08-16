@@ -66,7 +66,7 @@ class IndustryAnalyzer(BaseAnalyzer):
 
         sections = []
 
-        # Step 1：识别产业链关键词
+        # Step 1：识别产业链关键词（优先读 meta 缓存里已有的关键词）
         keywords = self._get_chain_keywords(stock_code, stock_name, llm_call)
         if "chain_keywords" in modules:
             kw_content = "**自动识别的产业链关键词：**\n" + "\n".join(f"- {k}" for k in keywords)
@@ -74,18 +74,37 @@ class IndustryAnalyzer(BaseAnalyzer):
                                     content=kw_content, data={"keywords": keywords},
                                     score=50, signal="hold"))
 
-        # Step 2：搜索各关键词最新资讯
+        # Step 2：搜索各关键词最新资讯（带本地缓存）
         search_context = {}
-        if search and keywords:
-            for kw in keywords[:4]:  # 最多搜4个，避免过慢
-                try:
-                    results = search(kw)
-                    snippets = [r.get("snippet", r.get("content", ""))[:300]
-                                for r in (results or [])[:3] if r]
-                    search_context[kw] = snippets
-                    logger.info("Industry search '%s': %d results", kw, len(snippets))
-                except Exception as e:
-                    logger.warning("Search error for '%s': %s", kw, e)
+        try:
+            from portal.data_cache import StockDataCache
+            cache = StockDataCache()
+        except Exception:
+            cache = None
+
+        if keywords:
+            for kw in keywords[:4]:
+                # 先查本地缓存
+                if cache:
+                    cached = cache.get_commodity(stock_code, kw)
+                    if cached is not None:
+                        search_context[kw] = cached
+                        logger.info("Industry cache hit '%s': %d snippets", kw, len(cached))
+                        continue
+
+                # 缓存未命中 → 网络搜索
+                if search:
+                    try:
+                        results = search(kw)
+                        snippets = [r.get("snippet", r.get("content", ""))[:300]
+                                    for r in (results or [])[:3] if r]
+                        search_context[kw] = snippets
+                        logger.info("Industry search '%s': %d results", kw, len(snippets))
+                        # 写入本地缓存
+                        if cache and snippets:
+                            cache.save_commodity(stock_code, kw, snippets)
+                    except Exception as e:
+                        logger.warning("Search error for '%s': %s", kw, e)
 
         # Step 3：各子模块 LLM 分析
         if "key_commodity" in modules:

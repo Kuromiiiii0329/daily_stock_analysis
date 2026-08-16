@@ -461,6 +461,25 @@ def _run_deep_analysis_task(
         final_report = merge_results(stock_code, stock_name, results, llm_call)
         log(f"🎯 综合评分={final_report['overall_score']}，信号={final_report['overall_signal_label']}")
 
+        # ── 保存元信息到缓存 ──────────────────────────────────
+        try:
+            from portal.data_cache import StockDataCache
+            cache = StockDataCache()
+            # 从产业链维度结果里提取关键词
+            industry_result = next(
+                (r for r in results if r.dimension == "industry"), None
+            )
+            keywords = []
+            if industry_result:
+                for sec in industry_result.sections:
+                    if sec.key == "chain_keywords":
+                        keywords = sec.data.get("keywords", [])
+                        break
+            cache.save_meta(stock_code, name=stock_name, keywords=keywords)
+            log(f"💾 元信息已保存（关键词: {len(keywords)} 个）")
+        except Exception as e:
+            logger.warning("保存 meta 失败: %s", e)
+
         with _tasks_lock:
             _tasks[task_id]["status"] = "done"
             _tasks[task_id]["report"] = json.dumps(final_report, ensure_ascii=False)
@@ -559,21 +578,84 @@ def _make_search_fn(log):
 
 
 def _fetch_kline(stock_code: str, log) -> object:
-    """获取股票 K线数据，返回 DataFrame 或 None。"""
+    """
+    获取股票 K 线数据（带本地增量缓存）。
+
+    流程：
+      1. 检查 portal/data/stocks/{code}/kline.csv 是否存在
+      2. 计算需要拉取的日期范围（full / incremental / up_to_date）
+      3. 拉取新数据 → 合并到缓存 → 返回完整 DataFrame
+    """
     try:
+        from portal.data_cache import StockDataCache
+        cache = StockDataCache()
+
+        start, end, mode = cache.calc_fetch_range(stock_code, days=120)
+
+        if mode == "up_to_date":
+            df = cache.get_kline(stock_code)
+            if df is not None and not df.empty:
+                log(f"📦 使用本地缓存（已是最新，{len(df)} 条）")
+                return df
+            # 缓存存在但读取失败，降级到网络拉取
+            log("⚠️  本地缓存读取失败，尝试网络拉取")
+            mode = "full"
+            start = None
+            end   = None
+
+        # 网络拉取
         from data_provider import DataFetcherManager
         from src.config import get_config
         config = get_config()
         mgr = DataFetcherManager(config)
-        df = mgr.get_stock_data(stock_code, days=120)
-        if df is not None and not df.empty:
-            log(f"✅ 获取到 {len(df)} 条K线数据")
-            return df
-        else:
-            log("⚠️  K线数据为空")
-            return None
+
+        if mode == "incremental":
+            log(f"📥 增量拉取 {start} ~ {end}")
+            result = mgr.get_daily_data(stock_code, start_date=start, end_date=end)
+            if isinstance(result, tuple):
+                new_df, source_name = result
+            else:
+                new_df, source_name = result, "unknown"
+
+            if new_df is not None and not new_df.empty:
+                cache.merge_kline(stock_code, new_df, source_name)
+                log(f"✅ 增量更新 {len(new_df)} 条，写入缓存")
+            else:
+                log("ℹ️  增量无新数据（可能是非交易日）")
+
+            df = cache.get_kline(stock_code)
+            if df is not None and not df.empty:
+                return df
+            # 缓存合并失败，返回增量数据
+            return new_df
+
+        else:  # full
+            log(f"🌐 首次全量拉取（最近 120 日）")
+            result = mgr.get_daily_data(stock_code, days=120)
+            if isinstance(result, tuple):
+                df, source_name = result
+            else:
+                df, source_name = result, "unknown"
+
+            if df is not None and not df.empty:
+                cache.save_kline(stock_code, df, source_name)
+                log(f"✅ 获取 {len(df)} 条K线数据，已写入缓存")
+                return df
+            else:
+                log("⚠️  K线数据为空")
+                return None
+
     except Exception as e:
         log(f"⚠️  K线数据获取失败：{e}")
+        # 降级：尝试直接从缓存读取（即使过期也比没有好）
+        try:
+            from portal.data_cache import StockDataCache
+            df = StockDataCache().get_kline(stock_code)
+            if df is not None and not df.empty:
+                log(f"📦 降级使用过期缓存（{len(df)} 条）")
+                return df
+        except Exception:
+            pass
         return None
 
 
