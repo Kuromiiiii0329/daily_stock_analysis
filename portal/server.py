@@ -489,7 +489,34 @@ class Handler(BaseHTTPRequestHandler):
 
         result = []
 
-        # ── 优先：akshare 全市场实时行情 ─────────────────────
+        # ── 优先：efinance get_base_info（内网稳定，返回名称+行业）──
+        # 东财 spot（akshare stock_zh_a_spot_em）在部分内网返回乱码/不通，
+        # efinance 个股基本信息接口更稳，用于可靠拿到股票名称。
+        try:
+            import efinance as ef
+            ef_ok = False
+            for code in codes:
+                name = None; price = None; pct = None
+                try:
+                    info = ef.stock.get_base_info(code)
+                    # 单只返回 Series，可取"股票名称"
+                    if info is not None and hasattr(info, "get"):
+                        nm = info.get("股票名称")
+                        if nm and str(nm) not in ("nan", "-", ""):
+                            name = str(nm); ef_ok = True
+                except Exception:
+                    pass
+                result.append({"code": code, "name": name, "price": price,
+                               "pct_chg": pct, "volume": None})
+            if ef_ok:
+                self._send_json(200, {"ok": True, "quotes": result})
+                return
+            result = []  # efinance 全空，落到 akshare 分支
+        except Exception as e:
+            logger.info("efinance 查名不可用，降级 akshare: %s", str(e)[:60])
+            result = []
+
+        # ── 次选：akshare 全市场实时行情（东财 spot）────────────
         try:
             import akshare as ak
             df = ak.stock_zh_a_spot_em()
@@ -581,6 +608,30 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ── 深度分析后台任务 ──────────────────────────────────────────
+def _json_default(o):
+    """json.dumps 的兜底：把 numpy 标量（bool_/int64/float64）等转成原生类型。"""
+    # numpy 标量都实现了 .item()
+    if hasattr(o, "item"):
+        try:
+            return o.item()
+        except Exception:
+            pass
+    # pandas/numpy 布尔、其他可布尔化对象
+    if isinstance(o, (set,)):
+        return list(o)
+    try:
+        import numpy as np
+        if isinstance(o, np.bool_):
+            return bool(o)
+        if isinstance(o, np.integer):
+            return int(o)
+        if isinstance(o, np.floating):
+            return float(o)
+    except Exception:
+        pass
+    return str(o)
+
+
 def _run_deep_analysis_task(
     task_id: str,
     stock_code: str,
@@ -732,7 +783,7 @@ def _run_deep_analysis_task(
 
         with _tasks_lock:
             _tasks[task_id]["status"] = "done"
-            _tasks[task_id]["report"] = json.dumps(final_report, ensure_ascii=False)
+            _tasks[task_id]["report"] = json.dumps(final_report, ensure_ascii=False, default=_json_default)
             _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
 
         log("✅ 深度分析完成")
@@ -806,25 +857,20 @@ def _make_llm_caller(log):
 
 
 def _make_search_fn(log):
-    """构建搜索函数，复用 src/search_service.py。"""
-    try:
-        from src.search_service import SearchService
-        from src.config import get_config
-        config = get_config()
-        svc = SearchService(config)
+    """
+    构建关键词搜索函数，供产业链 LLM 子模块检索资讯。
 
-        def search(query: str) -> list:
-            try:
-                results = svc.search(query, max_results=5)
-                return results or []
-            except Exception as e:
-                log(f"⚠️  搜索失败（{query[:20]}）：{e}")
-                return []
+    注：src/search_service.py 的 SearchService 只提供面向个股的
+    search_stock_news(code, name) 等接口，没有通用的 search(keyword)。
+    产业链子模块需要的是"关键词 → 资讯片段"，接口不匹配，故此处
+    暂不接入（返回 None）。industry.py 已对 search=None 做降级：
+    改用 LLM 自身知识分析，不影响板块子模块（板块用 efinance 真实数据）。
 
-        return search
-    except Exception as e:
-        log(f"⚠️  搜索服务初始化失败：{e}，产业链分析将无搜索数据")
-        return None
+    未来若要接入关键词搜索，可在此封装 SearchService.search_stock_news
+    或直接调用某个搜索 API，返回 [{"snippet": "..."}] 列表。
+    """
+    log("ℹ️  关键词搜索未接入，产业链 LLM 子模块将用模型知识分析（板块子模块不受影响）")
+    return None
 
 
 def _fetch_kline(stock_code: str, log) -> object:
@@ -855,9 +901,7 @@ def _fetch_kline(stock_code: str, log) -> object:
 
         # 网络拉取
         from data_provider import DataFetcherManager
-        from src.config import get_config
-        config = get_config()
-        mgr = DataFetcherManager(config)
+        mgr = DataFetcherManager()   # 无参：自动按优先级加载默认数据源
 
         if mode == "incremental":
             log(f"📥 增量拉取 {start} ~ {end}")

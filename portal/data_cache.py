@@ -72,7 +72,7 @@ def _last_trading_date() -> str:
     return (now - timedelta(days=3)).strftime("%Y-%m-%d")  # fallback
 
 
-
+class StockDataCache:
     """股票数据本地缓存管理器。"""
 
     def __init__(self, cache_dir: Optional[Path] = None):

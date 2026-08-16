@@ -174,6 +174,15 @@ export class RunTab {
                 </button>
               </div>
 
+              <!-- 批量：分析勾选的自选股 -->
+              <button id="btn-batch"
+                class="w-full py-2.5 rounded-xl text-xs font-bold transition-all
+                       bg-teal-600 hover:bg-teal-700 text-white shadow-sm shadow-teal-200
+                       active:scale-[.99] disabled:opacity-50 disabled:cursor-not-allowed">
+                📑 批量分析勾选的自选股
+              </button>
+              <p class="text-xs text-gray-400 -mt-1">按顺序依次深度分析「自选股」Tab 中勾选的股票，逐个生成报告</p>
+
             </div>
           </div>
 
@@ -378,16 +387,22 @@ export class RunTab {
       chips.innerHTML = '<span class="text-xs text-gray-300">（自选股为空，先去「自选股」Tab 添加）</span>';
       return;
     }
-    chips.innerHTML = stocks.map(code => `
-      <button class="chip px-2.5 py-1 text-xs border border-gray-200 rounded-lg font-mono text-gray-600"
-              data-code="${code}">${code}</button>`).join('');
+    chips.innerHTML = stocks.map(s => {
+      const label = s.name ? `${this._esc(s.name)}` : s.code;
+      return `<button class="chip px-2.5 py-1 text-xs border border-gray-200 rounded-lg text-gray-600"
+              data-code="${s.code}" data-name="${this._esc(s.name || '')}">${label}</button>`;
+    }).join('');
     chips.querySelectorAll('.chip').forEach(btn => {
       btn.addEventListener('click', () => {
         this._c.querySelector('#run-code').value = btn.dataset.code;
+        const nameEl = this._c.querySelector('#run-name');
+        if (nameEl) nameEl.value = btn.dataset.name || '';
         chips.querySelectorAll('.chip').forEach(b => b.classList.toggle('selected', b === btn));
       });
     });
   }
+
+  _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
   // ── 在线状态 UI ───────────────────────────────────────────────────────
   _updateOnlineUI() {
@@ -419,6 +434,7 @@ export class RunTab {
     this._c.querySelector('#btn-deep').addEventListener('click',   () => this._deepAnalyze());
     this._c.querySelector('#btn-market').addEventListener('click', () => this._quickRun('market'));
     this._c.querySelector('#btn-full').addEventListener('click',   () => this._quickRun('full'));
+    this._c.querySelector('#btn-batch').addEventListener('click',  () => this._batchAnalyze());
     this._c.querySelector('#run-code').addEventListener('keydown', e => {
       if (e.key === 'Enter') this._deepAnalyze();
     });
@@ -652,7 +668,7 @@ export class RunTab {
     return false;
   }
 
-  // ── 深度分析 ──────────────────────────────────────────────────────────
+  // ── 深度分析（单股，读输入框）──────────────────────────────────────────
   async _deepAnalyze() {
     const code = this._c.querySelector('#run-code').value.trim().toUpperCase();
     const name = this._c.querySelector('#run-name').value.trim();
@@ -664,8 +680,61 @@ export class RunTab {
     const ok = await this._ensureServer();
     if (!ok) return;
 
+    await this._runSingle(code, name || code, dims);
+  }
+
+  // ── 批量分析勾选的自选股（串行队列）──────────────────────────────────
+  async _batchAnalyze() {
+    const dims = [...this._selDims];
+    if (!dims.length) { this._t.show('请至少选择一个分析维度', 'warning'); return; }
+
+    const state = this._s.get();
+    const checked = (state.stock_list || []).filter(s => s.checked);
+    if (!checked.length) {
+      this._t.show('请先在「自选股」Tab 勾选要分析的股票', 'warning');
+      return;
+    }
+
+    const ok = await this._ensureServer();
+    if (!ok) return;
+
+    this._prepareLog(`📑 批量分析 ${checked.length} 只自选股`);
+    this._disableBtns();
+
+    let done = 0, failed = 0;
+    for (const s of checked) {
+      done++;
+      this._disableBtns();   // 每只前重新禁用（_runSingle 内 SSE done 会解禁）
+      this._appendLog(`──────── (${done}/${checked.length}) ${s.name || s.code} ────────`, 'info');
+      try {
+        const okOne = await this._runSingle(s.code, s.name || s.code, dims, { batch: true });
+        if (!okOne) failed++;
+      } catch (e) {
+        failed++;
+        this._appendLog(`❌ ${s.code} 分析异常：${e.message}`, 'error');
+      }
+    }
+
+    const badge = this._c.querySelector('#run-badge');
+    badge.textContent = `批量完成 ${done - failed}/${done}`;
+    badge.className = `text-xs px-2 py-0.5 rounded-full font-medium ${failed ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`;
+    this._resetBtns();
+    this._t.show(`批量分析完成：成功 ${done - failed} / 共 ${done}`, failed ? 'warning' : 'success', 6000);
+    // 批量结束切到报告页看最近历史
+    this._switchSubTab('report');
+  }
+
+  /**
+   * 分析单只股票 → Promise<boolean>（成功 true / 失败 false，永不 reject）。
+   * 供单股按钮和批量队列共用。batch=true 时不重置日志（保留队列上下文）。
+   */
+  async _runSingle(code, name, dims, { batch = false } = {}) {
     const modulesMap = Object.fromEntries(dims.map(d => [d, [...(this._selMods[d] || [])]]));
-    this._prepareLog(`🔬 深度分析：${name || code}（${code}）`);
+    if (!batch) {
+      this._prepareLog(`🔬 深度分析：${name || code}（${code}）`);
+    } else {
+      this._appendLog(`🔬 深度分析：${name || code}（${code}）`, 'info');
+    }
 
     let taskId;
     try {
@@ -678,10 +747,11 @@ export class RunTab {
       if (!d.ok) throw new Error(d.error);
       taskId = d.task_id;
     } catch (e) {
-      this._t.show(`启动失败: ${e.message}`, 'error');
-      this._resetBtns(); return;
+      this._appendLog(`❌ 启动失败：${e.message}`, 'error');
+      if (!batch) { this._t.show(`启动失败: ${e.message}`, 'error'); this._resetBtns(); }
+      return false;
     }
-    this._listenSSE(taskId, 'structured', code, name || code);
+    return this._listenSSE(taskId, 'structured', code, name || code);
   }
 
   // ── 快速任务 ──────────────────────────────────────────────────────────
@@ -723,32 +793,41 @@ export class RunTab {
     this._switchSubTab('log');
   }
 
-  // ── SSE 监听 ──────────────────────────────────────────────────────────
+  // ── SSE 监听（返回 Promise，done/error 都 resolve，供批量队列 await）──
   _listenSSE(taskId, rtype, code = '', subject = '') {
-    const sse = new EventSource(`${SERVER}/run/stream/${taskId}`);
-    this._sse = sse;
-    sse.onmessage = e => {
-      const d = JSON.parse(e.data);
-      this._appendLog(d.log, d.status === 'error' ? 'error' : 'default');
-    };
-    sse.addEventListener('done', e => {
-      sse.close(); this._sse = null;
-      const d = JSON.parse(e.data);
-      const ok = d.status === 'done';
-      const badge = this._c.querySelector('#run-badge');
-      badge.textContent = ok ? '完成 ✓' : '失败 ✗';
-      badge.className = `text-xs px-2 py-0.5 rounded-full font-medium ${ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`;
-      this._resetBtns();
-      if (d.has_report) {
-        this._loadReport(taskId, d.report_type || rtype, code, subject);
-      }
+    return new Promise((resolve) => {
+      const sse = new EventSource(`${SERVER}/run/stream/${taskId}`);
+      this._sse = sse;
+      let settled = false;
+      const finish = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+
+      sse.onmessage = e => {
+        const d = JSON.parse(e.data);
+        this._appendLog(d.log, d.status === 'error' ? 'error' : 'default');
+      };
+      sse.addEventListener('done', e => {
+        sse.close(); this._sse = null;
+        const d = JSON.parse(e.data);
+        const ok = d.status === 'done';
+        const badge = this._c.querySelector('#run-badge');
+        badge.textContent = ok ? '完成 ✓' : '失败 ✗';
+        badge.className = `text-xs px-2 py-0.5 rounded-full font-medium ${ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`;
+        this._resetBtns();
+        if (d.has_report) {
+          this._loadReport(taskId, d.report_type || rtype, code, subject).finally(() => finish(ok));
+        } else {
+          finish(ok);
+        }
+      });
+      sse.onerror = () => {
+        sse.close(); this._sse = null;
+        this._appendLog('⚠️ 连接断开，拉取结果...', 'warn');
+        setTimeout(() => {
+          this._loadReport(taskId, rtype, code, subject).finally(() => finish(false));
+        }, 600);
+        this._resetBtns();
+      };
     });
-    sse.onerror = () => {
-      sse.close(); this._sse = null;
-      this._appendLog('⚠️ 连接断开，拉取结果...', 'warn');
-      setTimeout(() => this._loadReport(taskId, rtype, code, subject), 600);
-      this._resetBtns();
-    };
   }
 
   async _loadReport(taskId, rtype, code = '', subject = '') {
@@ -1003,13 +1082,13 @@ export class RunTab {
 
   // ── 按钮状态 ──────────────────────────────────────────────────────────
   _disableBtns() {
-    ['#btn-deep','#btn-market','#btn-full'].forEach(s => {
+    ['#btn-deep','#btn-market','#btn-full','#btn-batch'].forEach(s => {
       const el = this._c.querySelector(s);
       if (el) el.disabled = true;
     });
   }
   _resetBtns() {
-    ['#btn-deep','#btn-market','#btn-full'].forEach(s => {
+    ['#btn-deep','#btn-market','#btn-full','#btn-batch'].forEach(s => {
       const el = this._c.querySelector(s);
       if (el) el.disabled = false;
     });

@@ -11,6 +11,8 @@ Portal 是一个**独立的股票分析系统**，分两种使用模式：
 
 整个流程：**网页选股 → 提交 JSON → 每日收邮件**；需要立即分析时：**点击按钮 → 自动提示启动 server → 实时查看日志 → 查看双维度报告**。
 
+**批量分析**：在「自选股」Tab 用 checkbox 勾选多只股票（勾选状态本地持久化），到「立即运行」点「📑 批量分析勾选的自选股」，队列按顺序逐个生成报告。添加股票时若 server 在线会自动查询名称，列表显示股票名称而非代码。
+
 ---
 
 ## 文件结构
@@ -28,18 +30,25 @@ portal/
 │   ├── base.py                 BaseAnalyzer 基类 + 数据类定义
 │   ├── technical.py            技术面（MA/MACD/RSI/KDJ/布林带/波浪/缠论）
 │   ├── fundamental.py          基本面（财报/成长/分红/主力资金/估值）
-│   ├── industry.py             产业链（LLM识别关键词 + 搜索 + 缓存）
+│   ├── industry.py             产业链（板块真实数据 + LLM识别关键词 + 搜索）
+│   ├── sector.py               板块数据层（efinance 个股→板块 + 板块K线 + 缓存降级）
 │   └── merger.py               合并报告（技术40% + 基本面40% + 产业链20%）
 ├── lib/                        捆绑的依赖库（portal 独立运行所需）
 │   ├── src/                    核心分析模块副本
 │   └── data_provider/          数据源模块副本
 ├── data/                       本地数据缓存（运行后自动生成）
-│   └── stocks/
-│       └── {股票代码}/
-│           ├── kline.csv       日线 K 线（增量更新）
-│           ├── meta.json       元信息（名称、关键词、最后更新时间）
-│           └── commodities/    相关商品/产品价格搜索缓存
-│               └── {关键词}.csv
+│   ├── stocks/
+│   │   └── {股票代码}/
+│   │       ├── kline.csv       日线 K 线（增量更新）
+│   │       ├── meta.json       元信息（名称、关键词、最后更新时间）
+│   │       └── commodities/    相关商品/产品价格搜索缓存
+│   │           └── {关键词}.csv
+│   └── sectors/                板块数据（全市场共享，非按股票）
+│       ├── boards/{代码}.csv    个股所属板块（TTL 24h）
+│       ├── kline/{BK}.csv       板块日线（增量，efinance/同花顺双源）
+│       ├── concept_snapshot.csv 全市场板块行情快照
+│       ├── concept_universe.csv 同花顺概念全集（区分题材/行业，TTL 7天）
+│       └── _blacklist.json      宽泛板块黑名单（可编辑）
 └── js/                         前端 UI 模块
     ├── app.js                  主入口：Tab 路由 + 服务状态轮询
     ├── store.js                状态管理 + localStorage 持久化
@@ -63,9 +72,9 @@ portal/
 | 文件 | 职责 | 修改场景 |
 |------|------|----------|
 | `js/app.js` | Tab 路由、服务状态轮询（每5秒）、底栏绑定 | 注册新 Tab |
-| `js/store.js` | 全局配置状态、localStorage 持久化、JSON 导出 | 新增配置字段时加 `DEFAULTS` 条目 |
-| `js/tabs/run.js` | 深度分析入口、维度/子模块勾选、SSE日志、报告渲染；自动检测并提示启动 server | 新增分析维度时同步更新 `DIM_DEFS` |
-| `js/tabs/watchlist.js` | 自选股增删查 | 修改股票卡片样式 |
+| `js/store.js` | 全局配置状态、localStorage 持久化、JSON 导出。**stock_list 为对象数组 `[{code,name,checked}]`，toJSON 降维回代码数组** | 新增配置字段时加 `DEFAULTS` 条目 |
+| `js/tabs/run.js` | 深度分析入口、维度勾选、SSE日志、报告渲染、**批量队列（分析勾选自选股）**；自动检测并提示启动 server | 新增分析维度时同步 `DIM_DEFS` |
+| `js/tabs/watchlist.js` | 自选股增删查、**checkbox 勾选（持久化）、代号自动转名称、显示名称** | 修改股票卡片样式 |
 | `js/tabs/settings.js` | 分析参数表单（JS驱动 toggle，不依赖 Tailwind peer） | 新增参数时加 `_row()` 并绑定事件 |
 | `js/tabs/guide.js` | 静态使用说明 | 更新步骤/Secrets说明 |
 | `js/components/modal.js` | 保存配置弹窗：在线时"直接保存到文件"，离线时复制JSON | 修改保存逻辑 |
@@ -80,7 +89,8 @@ portal/
 | `send_report.py` | 读取 `reports/*.md`，发送 HTML 邮件 | 修改邮件格式 |
 | `analyzers/technical.py` | MA/MACD/RSI/KDJ/布林带/量价（pandas计算）+ 形态/波浪/缠论（LLM） | 新增技术指标 |
 | `analyzers/fundamental.py` | 财报/成长/分红/主力资金/估值（复用 fundamental_adapter） | 新增财务指标 |
-| `analyzers/industry.py` | LLM识别产业链关键词 → 搜索 → 缓存 → LLM分析 | 新增行业关键词模板 |
+| `analyzers/industry.py` | 板块归属/景气/相对强弱（真实数据）+ 产业链关键词/竞争/政策（LLM） | 新增行业关键词模板 |
+| `analyzers/sector.py` | 板块数据层：efinance 个股→板块 + 板块K线 + 全市场快照 + 缓存降级 | 调整黑名单/数据源 |
 | `analyzers/merger.py` | 加权合并各维度结果，LLM生成综合结论 | 调整权重 |
 
 ---
@@ -157,7 +167,21 @@ python portal/server.py
 |------|------|-----------|----------|
 | 技术面 | `technical.py` | MA/MACD/RSI/KDJ/布林带/量价 | 本地K线缓存 → 网络 |
 | 基本面 | `fundamental.py` | 财报/成长/估值/主力资金 | fundamental_adapter |
-| 产业链 | `industry.py` | 商品价格/产业链地位/竞争/政策 | LLM + 搜索缓存 |
+| 产业链 | `industry.py` + `sector.py` | **所属板块/板块景气/相对强弱**（真实数据）+ 商品价格/产业链地位/竞争/政策（LLM） | efinance 板块数据 + LLM |
+
+### 板块子模块（真实数据，不依赖 LLM）
+
+产业链维度新增 3 个基于**真实板块数据**（efinance 东财口径）的子模块：
+
+| 子模块 | 说明 | 数据来源 |
+|--------|------|----------|
+| `sector_membership` | 个股所属核心题材板块清单（如"AI应用""固态电池"），带当日涨幅 | `ef.stock.get_belong_board` |
+| `sector_momentum` | 板块景气 + **个股 alpha = 个股涨幅 − 板块涨幅**（相对强弱） | 板块涨幅 + 个股K线 |
+| `sector_fund_flow` | 板块在全市场的涨幅排名、换手/量比 | `ef.stock.get_realtime_quotes` |
+
+- **细分概念自动更新**：板块名直接来自 efinance 实时结果，未来新增的细分概念（如新题材）自动出现，无需硬编码。
+- **题材优先**：用同花顺概念全集区分"题材概念"（可拿板块K线）与"行业分类"，题材排前。
+- **双源降级**：板块K线优先 efinance（东财），失败降级 akshare 同花顺 `stock_board_concept_index_ths`；全部失败则板块子模块跳过，不阻断整体分析。
 
 ### 加权评分
 

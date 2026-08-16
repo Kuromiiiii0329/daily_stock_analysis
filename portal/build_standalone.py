@@ -18,7 +18,7 @@ ORDER_WITH_PREFIX = [
     ("js/components/modal.js",       "MODAL"),
     ("js/components/report-view.js", None),
     ("js/store.js",                  None),
-    ("js/tabs/watchlist.js",         None),
+    ("js/tabs/watchlist.js",         "WL"),
     ("js/tabs/settings.js",          "SETTINGS"),
     ("js/tabs/guide.js",             None),
     ("js/tabs/run.js",               "RUN"),
