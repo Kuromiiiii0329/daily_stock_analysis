@@ -871,13 +871,15 @@ def _fetch_kline(stock_code: str, log) -> object:
                 cache.merge_kline(stock_code, new_df, source_name)
                 log(f"✅ 增量更新 {len(new_df)} 条，写入缓存")
             else:
-                log("ℹ️  增量无新数据（可能是非交易日）")
+                log("ℹ️  无新交易数据（非交易日），使用现有缓存进行复盘分析")
 
             df = cache.get_kline(stock_code)
             if df is not None and not df.empty:
                 return df
-            # 缓存合并失败，返回增量数据
-            return new_df
+            log("⚠️  本地缓存为空，尝试全量拉取")
+            mode = "full"
+            start = None
+            end   = None
 
         else:  # full
             log(f"🌐 首次全量拉取（最近 120 日）")

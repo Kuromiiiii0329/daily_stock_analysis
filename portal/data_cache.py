@@ -57,7 +57,22 @@ def _safe_filename(keyword: str) -> str:
     return safe[:60]  # 最长 60 字符
 
 
-class StockDataCache:
+def _last_trading_date() -> str:
+    """返回最近一个已收盘的 A 股交易日（字符串 'YYYY-MM-DD'）。
+    逻辑：从今天往前找，跳过周六/周日，最多回溯 7 天。
+    15:00 之后认为当日已收盘，15:00 之前认为昨日是最后收盘日。
+    """
+    now = _now_cn()
+    # 盘后（15:00+）才把今天算入
+    candidate = now.date() if (now.hour > 15 or (now.hour == 15 and now.minute >= 0)) else (now - timedelta(days=1)).date()
+    for _ in range(7):
+        if candidate.weekday() < 5:   # 周一~周五，暂不检查节假日
+            return candidate.strftime("%Y-%m-%d")
+        candidate -= timedelta(days=1)
+    return (now - timedelta(days=3)).strftime("%Y-%m-%d")  # fallback
+
+
+
     """股票数据本地缓存管理器。"""
 
     def __init__(self, cache_dir: Optional[Path] = None):
@@ -111,15 +126,16 @@ class StockDataCache:
             (start_date, end_date, mode)
             mode: "full" | "incremental" | "up_to_date"
         """
-        today_str = _now_cn().strftime("%Y-%m-%d")
-        last = self.get_kline_last_date(code)
+        today_str        = _now_cn().strftime("%Y-%m-%d")
+        last_trade_str   = _last_trading_date()
+        last             = self.get_kline_last_date(code)
 
         if last is None:
-            # 首次：拉 days 天（取 days*2 个日历日确保足够交易日）
             start = (_now_cn() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
             return start, today_str, "full"
 
-        if last >= today_str:
+        # 缓存已覆盖到最近交易日（含今天）→ 无需拉取
+        if last >= last_trade_str:
             return None, None, "up_to_date"
 
         # 增量：从 last + 1 到今天
