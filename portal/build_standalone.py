@@ -19,7 +19,7 @@ ORDER_WITH_PREFIX = [
     ("js/components/report-view.js", None),
     ("js/store.js",                  None),
     ("js/tabs/watchlist.js",         None),
-    ("js/tabs/settings.js",          None),
+    ("js/tabs/settings.js",          "SETTINGS"),
     ("js/tabs/guide.js",             None),
     ("js/tabs/run.js",               "RUN"),
     ("js/app.js",                    "APP"),

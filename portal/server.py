@@ -29,6 +29,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 PORT = int(os.environ.get("PORTAL_SERVER_PORT", 7788))
+
+ALLOWED_ENV_KEYS = {
+    "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "LITELLM_MODEL",
+    "TUSHARE_TOKEN", "BOCHA_API_KEYS", "TAVILY_API_KEYS", "SERPAPI_API_KEYS",
+    "EMAIL_SENDER", "EMAIL_PASSWORD", "EMAIL_RECEIVERS", "EMAIL_SENDER_NAME",
+}
 PORTAL_DIR   = Path(__file__).parent          # portal/
 PROJECT_ROOT = PORTAL_DIR.parent              # daily/  (may not exist if running standalone)
 LIB_DIR      = PORTAL_DIR / "lib"             # portal/lib/ — bundled dependencies
@@ -147,6 +153,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/health", "/"):
             self._send_json(200, {"ok": True, "config_path": str(CONFIG_PATH)})
 
+        elif path == "/env":
+            self._handle_get_env()
+
         elif path.startswith("/run/stream/"):
             task_id = path.split("/run/stream/")[-1]
             self._handle_sse(task_id)
@@ -199,6 +208,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_run(payload)
         elif path == "/analyze":
             self._handle_analyze(payload)
+        elif path == "/env":
+            self._handle_set_env(payload)
         else:
             self._send_json(404, {"ok": False, "error": "not found"})
 
@@ -382,6 +393,80 @@ class Handler(BaseHTTPRequestHandler):
         thread.start()
         logger.info("深度分析任务 %s 已启动: %s (%s)", task_id, stock_name, stock_code)
         self._send_json(200, {"ok": True, "task_id": task_id})
+
+    def _handle_get_env(self):
+        """GET /env — 返回 .env 中已配置的白名单 key，value 用星号掩码（前3后3）。"""
+        env_file = PROJECT_ROOT / ".env"
+        configured = {}
+        if env_file.exists():
+            try:
+                for line in env_file.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k in ALLOWED_ENV_KEYS and v:
+                            if len(v) <= 6:
+                                masked = "*" * len(v)
+                            else:
+                                masked = v[:3] + "*" * (len(v) - 6) + v[-3:]
+                            configured[k] = masked
+            except Exception as e:
+                self._send_json(500, {"ok": False, "error": str(e)})
+                return
+        self._send_json(200, {"ok": True, "env": configured})
+
+    def _handle_set_env(self, payload: dict):
+        """POST /env — 写入白名单内的 key 到 .env 文件，保留注释，立即生效。"""
+        updates = payload.get("env", {})
+        if not isinstance(updates, dict):
+            self._send_json(400, {"ok": False, "error": "env 字段必须是对象"})
+            return
+
+        # 只保留白名单内的 key
+        safe_updates = {k: v for k, v in updates.items() if k in ALLOWED_ENV_KEYS}
+        if not safe_updates:
+            self._send_json(200, {"ok": True, "updated": []})
+            return
+
+        env_file = PROJECT_ROOT / ".env"
+        # 读取现有内容
+        if env_file.exists():
+            lines = env_file.read_text(encoding="utf-8").splitlines()
+        else:
+            lines = []
+
+        # 对每个要更新的 key，在已有行中替换，记录哪些已更新
+        updated_keys = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                k, _, _ = stripped.partition("=")
+                k = k.strip()
+                if k in safe_updates:
+                    new_lines.append(f'{k}={safe_updates[k]}')
+                    updated_keys.add(k)
+                    continue
+            new_lines.append(line)
+
+        # 追加尚未出现的 key
+        for k, v in safe_updates.items():
+            if k not in updated_keys:
+                new_lines.append(f'{k}={v}')
+
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+        # 立即生效：更新当前进程环境变量
+        _load_dotenv()
+        # 强制覆盖（_load_dotenv 不覆盖已有值，新写入的要强制更新）
+        for k, v in safe_updates.items():
+            os.environ[k] = v
+
+        logger.info("✅ .env 已更新，keys: %s", list(safe_updates.keys()))
+        self._send_json(200, {"ok": True, "updated": list(safe_updates.keys())})
 
 
 # ── 深度分析后台任务 ──────────────────────────────────────────

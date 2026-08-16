@@ -701,6 +701,8 @@ class WatchlistTab {
  * tabs/settings.js — 分析参数设置（纯静态，无需 server）
  * Toggle 用 JS 驱动，不依赖 Tailwind peer（innerHTML 里 peer 无效）
  */
+const SERVER_SETTINGS = 'http://127.0.0.1:7788';
+
 class SettingsTab {
   constructor(container, store, toast) {
     this._c = container; this._s = store; this._t = toast;
@@ -783,6 +785,48 @@ class SettingsTab {
             详见「说明」Tab。
           </p>
         </div>
+
+        <!-- API 配置 -->
+        <div class="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden mt-4">
+          <details>
+            <summary class="px-5 py-3.5 cursor-pointer font-semibold text-gray-800 text-sm">🔐 本地 API 配置（.env）</summary>
+            <div class="px-5 pb-4 border-t border-gray-50">
+
+              <!-- LLM 子区块 -->
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mt-4 mb-3">LLM</p>
+              <div class="space-y-4">
+                ${this._envField('GEMINI_API_KEY',  'Gemini API Key',   'password', '在 aistudio.google.com 获取')}
+                ${this._envField('DEEPSEEK_API_KEY','DeepSeek API Key', 'password', '在 platform.deepseek.com 获取')}
+                ${this._envField('OPENAI_API_KEY',  'OpenAI API Key',   'password', '在 platform.openai.com 获取')}
+              </div>
+
+              <!-- 搜索 子区块 -->
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mt-5 mb-3">Search</p>
+              <div class="space-y-4">
+                ${this._envField('BOCHA_API_KEYS',  'Bocha 搜索 Key',  'password', '在 bochaai.com 获取，可选')}
+                ${this._envField('TAVILY_API_KEYS', 'Tavily 搜索 Key', 'password', '在 app.tavily.com 获取，可选')}
+              </div>
+
+              <!-- 邮件 子区块 -->
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mt-5 mb-3">Email</p>
+              <div class="space-y-4">
+                ${this._envField('EMAIL_SENDER',    '发件人邮箱',   'email',    '')}
+                ${this._envField('EMAIL_PASSWORD',  '邮箱授权码',   'password', '非登录密码，在邮箱设置中生成')}
+                ${this._envField('EMAIL_RECEIVERS', '收件人邮箱',   'text',     '多个用逗号分隔')}
+              </div>
+
+              <!-- 底部按钮 & 状态 -->
+              <div class="flex items-center gap-3 mt-5 pt-4 border-t border-gray-100">
+                <button id="btn-save-env"
+                  class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 active:scale-95 transition-all">
+                  💾 保存到本地 .env
+                </button>
+                <span id="env-status" class="text-xs text-gray-400">正在读取...</span>
+              </div>
+
+            </div>
+          </details>
+        </div>
       </div>`;
 
     this._bindToggle('cfg-market-review-btn', 'cfg-market-thumb', 'cfg-market-review',
@@ -802,6 +846,11 @@ class SettingsTab {
     this._bindInput('cfg-email-prefix',  'email.subject_prefix');
 
     this._s.subscribe(state => this._sync(state));
+
+    this._c.querySelector('#btn-save-env')
+      ?.addEventListener('click', () => this._saveEnv());
+
+    this._loadEnvStatus();
   }
 
   _row(label, control, hint = '') {
@@ -864,6 +913,69 @@ class SettingsTab {
     thumb.classList.toggle('translate-x-5', on);
     thumb.classList.toggle('translate-x-0', !on);
     sideEffect?.(on);
+  }
+
+  /** 渲染单个 .env 字段行 */
+  _envField(key, label, type = 'text', help = '') {
+    return `
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">${label}</label>
+        <input type="${type}" id="env-${key}" autocomplete="off" spellcheck="false"
+          class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent font-mono"
+          placeholder="${key}" />
+        ${help ? `<p class="text-xs text-gray-400 mt-1">${help}</p>` : ''}
+      </div>`;
+  }
+
+  /** 从 /env 读取掩码值填充各 input */
+  async _loadEnvStatus() {
+    const status = this._c.querySelector('#env-status');
+    try {
+      const res = await fetch(`${SERVER_SETTINGS}/env`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const keys = [
+        'GEMINI_API_KEY','DEEPSEEK_API_KEY','OPENAI_API_KEY',
+        'BOCHA_API_KEYS','TAVILY_API_KEYS',
+        'EMAIL_SENDER','EMAIL_PASSWORD','EMAIL_RECEIVERS'
+      ];
+      keys.forEach(k => {
+        const el = this._c.querySelector(`#env-${k}`);
+        if (el && data[k]) el.value = data[k];
+      });
+      if (status) status.textContent = '已从服务器读取';
+    } catch (e) {
+      if (status) status.textContent = `读取失败：${e.message}`;
+    }
+  }
+
+  /** 收集非空 input 值，POST /env 保存 */
+  async _saveEnv() {
+    const status = this._c.querySelector('#env-status');
+    const keys = [
+      'GEMINI_API_KEY','DEEPSEEK_API_KEY','OPENAI_API_KEY',
+      'BOCHA_API_KEYS','TAVILY_API_KEYS',
+      'EMAIL_SENDER','EMAIL_PASSWORD','EMAIL_RECEIVERS'
+    ];
+    const payload = {};
+    keys.forEach(k => {
+      const el = this._c.querySelector(`#env-${k}`);
+      if (el && el.value.trim()) payload[k] = el.value.trim();
+    });
+    if (status) status.textContent = '保存中...';
+    try {
+      const res = await fetch(`${SERVER_SETTINGS}/env`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      this._t?.('已保存到 .env', 'success');
+      if (status) status.textContent = '保存成功';
+    } catch (e) {
+      this._t?.(`保存失败：${e.message}`, 'error');
+      if (status) status.textContent = `保存失败：${e.message}`;
+    }
   }
 }
 
@@ -985,12 +1097,20 @@ class GuideTab {
 
 // ── js/tabs/run.js ──────────────────────────────
 /**
- * tabs/run.js — 立即运行分析
+ * tabs/run.js — 立即运行分析（三子面板布局）
  *
- * 关键设计：
- * - 纯静态模式默认可用（大盘/全量走 /run，UI 可见）
- * - "直接分析"或"直接保存"首次点击时自动尝试启动 server
- * - server 不在线时弹出一次性引导，之后静默轮询恢复
+ * 子面板布局：
+ *   [分析] 紧凑输入 + 自选股芯片 + 可折叠维度选择（<details>）+ 操作按钮行
+ *   [日志] 状态 badge + 清空按钮 + 全高日志区（每行带 [HH:MM:SS] 时间戳）
+ *   [报告] 工具栏（复制/视图切换）+ 报告内容区 + 历史列表（最近 5 条）
+ *
+ * 流程：
+ *   点击分析 -> _deepAnalyze() -> _switchSubTab('log') -> SSE done -> _switchSubTab('report')
+ *
+ * 历史记录：
+ *   localStorage key: "dsa_run_history"
+ *   格式：[{code, name, score, signal, time, taskId}]
+ *   最多 10 条，新的在前
  */
 
 
@@ -1028,17 +1148,25 @@ const DIM_DEFS = {
   },
 };
 
+const HISTORY_KEY = 'dsa_run_history';
+const HISTORY_MAX = 10;
+const HISTORY_SHOW = 5;
+
 class RunTab {
   constructor(container, store, toast) {
     this._c = container; this._s = store; this._t = toast;
-    this._online  = false;
-    this._sse     = null;
-    this._report  = null;
-    this._selDims = new Set(['technical','fundamental','industry']);
-    this._selMods = Object.fromEntries(
+    this._online         = false;
+    this._sse            = null;
+    this._report         = null;
+    this._selDims        = new Set(['technical','fundamental','industry']);
+    this._selMods        = Object.fromEntries(
       Object.entries(DIM_DEFS).map(([k,v]) => [k, new Set(v.defaults)])
     );
-    this._serverStarting = false; // 防止重复触发启动
+    this._serverStarting = false;
+    this._activeSub      = 'analyze'; // 'analyze' | 'log' | 'report'
+    this._viewMode       = 'structured'; // 'structured' | 'markdown'
+    this._lastRawReport  = null;
+    this._lastRtype      = null;
   }
 
   init() {
@@ -1052,18 +1180,17 @@ class RunTab {
     if (changed) this._updateOnlineUI();
   }
 
-  // ── 主渲染 ────────────────────────────────────────────────
+  // ── 主渲染 ────────────────────────────────────────────────────────────
   _render() {
     this._c.innerHTML = `
-      <div class="max-w-3xl mx-auto space-y-5 pb-20">
+      <div class="max-w-3xl mx-auto pb-20">
 
-        <!-- 页头 -->
-        <div class="flex items-start justify-between">
+        <!-- 页头：标题 + 服务状态 -->
+        <div class="flex items-center justify-between mb-4">
           <div>
             <h2 class="text-base font-semibold text-gray-900">立即运行分析</h2>
             <p class="text-xs text-gray-500 mt-0.5">深度双维度分析 · 或快速触发大盘/全量任务</p>
           </div>
-          <!-- 服务状态 chip -->
           <div id="run-svc-chip"
             class="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium
                    bg-gray-50 border-gray-200 text-gray-400">
@@ -1072,124 +1199,199 @@ class RunTab {
           </div>
         </div>
 
-        <!-- ① 深度分析卡片 -->
-        <div class="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
-          <div class="px-5 pt-4 pb-3 border-b border-gray-50">
-            <p class="text-sm font-semibold text-gray-800">🔬 深度分析</p>
-            <p class="text-xs text-gray-400 mt-0.5">技术面 + 基本面 + 产业链，生成结构化报告</p>
-          </div>
-          <div class="px-5 py-4 space-y-4">
+        <!-- 子 Tab 导航栏 -->
+        <div class="flex gap-1 mb-4 bg-gray-100 rounded-xl p-1">
+          <button data-sub="analyze"
+            class="sub-tab flex-1 py-2 text-xs font-semibold rounded-lg transition-all">
+            ⚙️ 分析
+          </button>
+          <button data-sub="log"
+            class="sub-tab flex-1 py-2 text-xs font-semibold rounded-lg transition-all">
+            <span>📋 日志</span>
+            <span id="tab-log-badge" class="hidden ml-1 inline-block w-2 h-2 rounded-full bg-blue-500 align-middle"></span>
+          </button>
+          <button data-sub="report"
+            class="sub-tab flex-1 py-2 text-xs font-semibold rounded-lg transition-all">
+            <span>📄 报告</span>
+            <span id="tab-report-badge" class="hidden ml-1 inline-block w-2 h-2 rounded-full bg-green-500 align-middle"></span>
+          </button>
+        </div>
 
-            <!-- 股票输入 -->
-            <div class="flex gap-2">
-              <input id="run-code" type="text" placeholder="股票代码，如 002466" maxlength="12"
-                class="form-input flex-1" autocomplete="off" />
-              <input id="run-name" type="text" placeholder="股票名称（可选）" maxlength="20"
-                class="form-input w-36" />
+        <!-- ══ 子面板 1：分析 ══ -->
+        <div id="sub-analyze" class="space-y-4">
+
+          <div class="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
+            <div class="px-4 pt-3 pb-2.5 border-b border-gray-50 flex items-center gap-2">
+              <p class="text-sm font-semibold text-gray-800">🔬 深度分析</p>
+              <span class="text-xs text-gray-400">技术面 + 基本面 + 产业链</span>
             </div>
+            <div class="px-4 py-3 space-y-3">
 
-            <!-- 自选股快速选 -->
-            <div id="run-chips" class="flex flex-wrap gap-1.5 min-h-[1.5rem]"></div>
+              <!-- 输入行：股票代码 + 股票名称（同一行 flex） -->
+              <div class="flex gap-2">
+                <input id="run-code" type="text" placeholder="股票代码，如 002466" maxlength="12"
+                  class="form-input flex-1 text-sm" autocomplete="off" />
+                <input id="run-name" type="text" placeholder="名称（可选）" maxlength="20"
+                  class="form-input w-32 text-sm" />
+              </div>
 
-            <!-- 维度选择 -->
-            <div class="space-y-2" id="dim-list"></div>
+              <!-- 自选股芯片 -->
+              <div id="run-chips" class="flex flex-wrap gap-1.5 min-h-[1.5rem]"></div>
 
-            <!-- 开始按钮 -->
-            <button id="btn-deep"
-              class="w-full py-2.5 rounded-xl text-sm font-bold transition-all
-                     bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-200
-                     active:scale-[.99]">
-              🔬 开始深度分析
-            </button>
+              <!-- 维度选择：<details> 折叠，默认收起 -->
+              <details class="group">
+                <summary class="flex items-center gap-1.5 text-xs text-gray-500
+                                hover:text-gray-700 transition-colors cursor-pointer select-none list-none">
+                  <span class="transition-transform group-open:rotate-90">▶</span>
+                  <span>高级选项（维度）已选 <span id="dims-count">3</span> 个维度</span>
+                </summary>
+                <div id="dim-list" class="mt-2 space-y-2"></div>
+              </details>
+
+              <!-- 操作按钮行：[深度分析] [大盘复盘] [全量分析] -->
+              <div class="flex gap-2">
+                <button id="btn-deep"
+                  class="flex-1 py-2.5 rounded-xl text-xs font-bold transition-all
+                         bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-200
+                         active:scale-[.99] disabled:opacity-50 disabled:cursor-not-allowed">
+                  🔬 深度分析
+                </button>
+                <button id="btn-market"
+                  class="flex-1 py-2.5 rounded-xl text-xs font-bold transition-all
+                         bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm shadow-indigo-200
+                         active:scale-[.99] disabled:opacity-50 disabled:cursor-not-allowed">
+                  🌐 大盘复盘
+                </button>
+                <button id="btn-full"
+                  class="flex-1 py-2.5 rounded-xl text-xs font-bold transition-all
+                         bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-200
+                         active:scale-[.99] disabled:opacity-50 disabled:cursor-not-allowed">
+                  ⚡ 全量分析
+                </button>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ══ 子面板 2：日志 ══ -->
+        <div id="sub-log" class="hidden">
+          <div class="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
+            <!-- 顶部状态栏 -->
+            <div class="flex items-center justify-between px-4 py-2.5 border-b border-gray-50">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-semibold text-gray-700">运行日志</span>
+                <span id="run-badge"
+                  class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 font-medium">待机</span>
+              </div>
+              <button id="btn-clear-log"
+                class="text-xs text-gray-300 hover:text-gray-500 transition-colors">清空</button>
+            </div>
+            <!-- 日志框 -->
+            <div id="log-box"
+              class="min-h-96 max-h-[60vh] overflow-y-auto p-3 bg-gray-950 font-mono"></div>
           </div>
         </div>
 
-        <!-- ② 快速任务行 -->
-        <div class="grid grid-cols-2 gap-3">
-          <div class="bg-white border border-gray-100 rounded-2xl shadow-sm p-4">
-            <p class="text-sm font-semibold text-gray-800 mb-1">🌐 大盘复盘</p>
-            <p class="text-xs text-gray-400 mb-3">分析大盘指数走势和市场情绪</p>
-            <div class="flex items-center justify-between">
-              <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
-                <input type="checkbox" id="run-market-force" class="accent-blue-600" />强制运行
-              </label>
-              <button id="btn-market"
-                class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs
-                       font-semibold rounded-lg transition-colors">
-                ▶ 运行
-              </button>
-            </div>
-          </div>
-          <div class="bg-white border border-gray-100 rounded-2xl shadow-sm p-4">
-            <p class="text-sm font-semibold text-gray-800 mb-1">⚡ 全量分析</p>
-            <p class="text-xs text-gray-400 mb-3">按 watchlist.json 分析所有自选股</p>
-            <div class="flex items-center justify-between">
-              <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
-                <input type="checkbox" id="run-full-force" class="accent-blue-600" />强制运行
-              </label>
-              <button id="btn-full"
-                class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs
-                       font-semibold rounded-lg transition-colors">
-                ▶ 运行
-              </button>
-            </div>
-          </div>
-        </div>
+        <!-- ══ 子面板 3：报告 ══ -->
+        <div id="sub-report" class="hidden space-y-4">
 
-        <!-- ③ 日志区（运行时显示） -->
-        <div id="run-log-section" class="hidden bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
-          <div class="flex items-center justify-between px-4 py-2.5 border-b border-gray-50">
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-semibold text-gray-700">运行日志</span>
-              <span id="run-badge"
-                class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">运行中</span>
-            </div>
-            <button id="btn-clear-log" class="text-xs text-gray-300 hover:text-gray-500">清空</button>
-          </div>
-          <div id="log-box" class="h-48 overflow-y-auto p-3 bg-gray-950" id="log-box"></div>
-        </div>
-
-        <!-- ④ 报告区（完成后显示） -->
-        <div id="run-report-section" class="hidden">
-          <div class="flex items-center justify-between mb-3">
+          <!-- 工具栏：复制 + 切换视图 -->
+          <div class="flex items-center justify-between">
             <p class="text-sm font-semibold text-gray-800">📄 分析报告</p>
-            <button id="btn-copy-report"
-              class="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors">
-              复制
-            </button>
+            <div class="flex items-center gap-2">
+              <!-- 视图切换 -->
+              <div class="flex rounded-lg overflow-hidden border border-gray-200 text-xs">
+                <button id="btn-view-structured"
+                  class="view-btn px-2.5 py-1 font-medium transition-colors bg-blue-600 text-white">
+                  结构化
+                </button>
+                <button id="btn-view-markdown"
+                  class="view-btn px-2.5 py-1 font-medium transition-colors bg-white text-gray-500 hover:bg-gray-50">
+                  Markdown
+                </button>
+              </div>
+              <!-- 复制 -->
+              <button id="btn-copy-report"
+                class="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors">
+                复制
+              </button>
+            </div>
           </div>
-          <div id="report-structured"></div>
-          <div id="report-markdown" class="hidden bg-white border border-gray-100 rounded-2xl p-5
-               text-sm text-gray-700 leading-relaxed"></div>
+
+          <!-- 报告内容区 -->
+          <div id="report-structured" class="min-h-32"></div>
+          <div id="report-markdown"
+            class="hidden bg-white border border-gray-100 rounded-2xl p-5 text-sm text-gray-700 leading-relaxed min-h-32"></div>
+
+          <!-- 无报告提示 -->
+          <div id="report-empty" class="py-16 text-center text-gray-300 text-sm">
+            运行分析后报告将显示在这里
+          </div>
+
+          <!-- 历史记录：最近 5 条 -->
+          <div id="run-history" class="hidden mt-4">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-xs font-semibold text-gray-500">最近历史</span>
+              <button id="btn-clear-history"
+                class="text-xs text-gray-300 hover:text-red-400 transition-colors">清空</button>
+            </div>
+            <div id="run-history-list" class="space-y-1.5"></div>
+          </div>
+
         </div>
+
       </div>`;
 
     this._buildDims();
     this._bindEvents();
     this._updateOnlineUI();
     this._report = new ReportView(this._c.querySelector('#report-structured'));
+    this._switchSubTab('analyze');
+    this._renderHistory();
   }
 
-  // ── 维度选择器 ────────────────────────────────────────────
+  // ── 子面板切换 ────────────────────────────────────────────────────────
+  _switchSubTab(name) {
+    this._activeSub = name;
+    ['analyze','log','report'].forEach(p => {
+      const el  = this._c.querySelector(`#sub-${p}`);
+      const btn = this._c.querySelector(`[data-sub="${p}"]`);
+      if (!el || !btn) return;
+      const active = p === name;
+      el.classList.toggle('hidden', !active);
+      if (active) {
+        btn.classList.remove('text-gray-500');
+        btn.classList.add('bg-white', 'shadow-sm', 'text-gray-900');
+      } else {
+        btn.classList.remove('bg-white', 'shadow-sm', 'text-gray-900');
+        btn.classList.add('text-gray-500');
+      }
+    });
+    if (name === 'log')    this._c.querySelector('#tab-log-badge')?.classList.add('hidden');
+    if (name === 'report') this._c.querySelector('#tab-report-badge')?.classList.add('hidden');
+  }
+
+  // ── 维度选择器 ────────────────────────────────────────────────────────
   _buildDims() {
     const list = this._c.querySelector('#dim-list');
     Object.entries(DIM_DEFS).forEach(([dimKey, dimDef]) => {
-      const colorMap = { blue: 'blue', emerald: 'emerald', violet: 'violet' };
-      const c = colorMap[dimDef.color] || 'blue';
+      const c = dimDef.color || 'blue';
       const wrap = document.createElement('div');
-      wrap.className = `border border-gray-100 rounded-xl overflow-hidden`;
+      wrap.className = 'border border-gray-100 rounded-xl overflow-hidden';
       const checked = this._selDims.has(dimKey);
       wrap.innerHTML = `
-        <div class="flex items-center gap-3 px-4 py-2.5 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
+        <div class="flex items-center gap-3 px-3 py-2 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
              data-dim="${dimKey}">
           <input type="checkbox" id="dim-${dimKey}" ${checked ? 'checked' : ''}
             class="w-4 h-4 accent-${c}-600 cursor-pointer" />
-          <label for="dim-${dimKey}" class="text-sm font-medium text-gray-700 cursor-pointer flex-1 select-none">
+          <label for="dim-${dimKey}" class="text-xs font-medium text-gray-700 cursor-pointer flex-1 select-none">
             ${dimDef.label}
           </label>
-          <span class="text-xs text-gray-400">▼ 子模块</span>
+          <span class="text-xs text-gray-400">▼</span>
         </div>
-        <div class="dim-mods ${checked ? '' : 'hidden'} px-4 py-2.5 grid grid-cols-2 sm:grid-cols-3 gap-2 bg-white"
+        <div class="dim-mods ${checked ? '' : 'hidden'} px-3 py-2 grid grid-cols-2 sm:grid-cols-3 gap-1.5 bg-white"
              data-dim="${dimKey}">
           ${Object.entries(dimDef.mods).map(([mk, ml]) => `
             <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer hover:text-${c}-600">
@@ -1202,7 +1404,6 @@ class RunTab {
       list.appendChild(wrap);
     });
 
-    // 维度行点击（不点 checkbox 本身时切换）
     list.querySelectorAll('[data-dim]').forEach(row => {
       if (row.classList.contains('dim-mods')) return;
       row.addEventListener('click', e => {
@@ -1217,6 +1418,7 @@ class RunTab {
         const modsEl = list.querySelector(`.dim-mods[data-dim="${k}"]`);
         cb.checked ? this._selDims.add(k) : this._selDims.delete(k);
         modsEl?.classList.toggle('hidden', !cb.checked);
+        this._updateDimsCount();
       });
     });
     list.querySelectorAll('.mod-cb').forEach(cb => {
@@ -1227,7 +1429,12 @@ class RunTab {
     });
   }
 
-  // ── 自选股芯片 ────────────────────────────────────────────
+  _updateDimsCount() {
+    const el = this._c.querySelector('#dims-count');
+    if (el) el.textContent = this._selDims.size;
+  }
+
+  // ── 自选股芯片 ────────────────────────────────────────────────────────
   _syncChips(state) {
     const chips = this._c.querySelector('#run-chips');
     if (!chips) return;
@@ -1247,51 +1454,94 @@ class RunTab {
     });
   }
 
-  // ── 在线状态 UI 更新 ───────────────────────────────────────
+  // ── 在线状态 UI ───────────────────────────────────────────────────────
   _updateOnlineUI() {
     const dot   = this._c.querySelector('#run-dot');
     const label = this._c.querySelector('#run-svc-label');
     const chip  = this._c.querySelector('#run-svc-chip');
     if (!dot) return;
     if (this._online) {
-      dot.className   = 'status-dot online';
+      dot.className     = 'status-dot online';
       label.textContent = '本地服务在线';
-      chip.className = chip.className.replace(/bg-\S+|border-\S+|text-\S+/g, '').trim()
+      chip.className    = chip.className.replace(/bg-\S+|border-\S+|text-\S+/g, '').trim()
         + ' bg-green-50 border-green-200 text-green-700';
     } else {
-      dot.className   = 'status-dot offline';
+      dot.className     = 'status-dot offline';
       label.textContent = '纯静态模式';
-      chip.className = chip.className.replace(/bg-\S+|border-\S+|text-\S+/g, '').trim()
+      chip.className    = chip.className.replace(/bg-\S+|border-\S+|text-\S+/g, '').trim()
         + ' bg-gray-50 border-gray-200 text-gray-400';
     }
   }
 
-  // ── 事件绑定 ──────────────────────────────────────────────
+  // ── 事件绑定 ──────────────────────────────────────────────────────────
   _bindEvents() {
+    // 子 Tab 切换
+    this._c.querySelectorAll('.sub-tab').forEach(btn => {
+      btn.addEventListener('click', () => this._switchSubTab(btn.dataset.sub));
+    });
+
+    // 分析按钮
     this._c.querySelector('#btn-deep').addEventListener('click',   () => this._deepAnalyze());
     this._c.querySelector('#btn-market').addEventListener('click', () => this._quickRun('market'));
     this._c.querySelector('#btn-full').addEventListener('click',   () => this._quickRun('full'));
-    this._c.querySelector('#run-code').addEventListener('keydown', e => { if (e.key === 'Enter') this._deepAnalyze(); });
+    this._c.querySelector('#run-code').addEventListener('keydown', e => {
+      if (e.key === 'Enter') this._deepAnalyze();
+    });
+
+    // 日志清空
     this._c.querySelector('#btn-clear-log').addEventListener('click', () => {
       this._c.querySelector('#log-box').innerHTML = '';
     });
+
+    // 复制报告
     this._c.querySelector('#btn-copy-report').addEventListener('click', async () => {
-      const box = this._c.querySelector('#report-markdown');
+      const mbox = this._c.querySelector('#report-markdown');
       const sbox = this._c.querySelector('#report-structured');
       try {
-        await navigator.clipboard.writeText(box.dataset.raw || sbox.innerText || '');
+        await navigator.clipboard.writeText(mbox.dataset.raw || sbox.innerText || '');
         this._t.show('已复制', 'success');
       } catch { this._t.show('复制失败', 'warning'); }
     });
+
+    // 视图切换
+    this._c.querySelector('#btn-view-structured').addEventListener('click', () => this._setViewMode('structured'));
+    this._c.querySelector('#btn-view-markdown').addEventListener('click',   () => this._setViewMode('markdown'));
+
+    // 历史清空
+    this._c.querySelector('#btn-clear-history')?.addEventListener('click', () => {
+      localStorage.removeItem(HISTORY_KEY);
+      this._renderHistory();
+    });
   }
 
-  // ── 自动启动 server ────────────────────────────────────────
-  /**
-   * 点击"直接分析"或"直接保存"时调用。
-   * 若 server 已在线，直接返回 true。
-   * 若未在线，尝试通过 fetch 触发 server（实际上由用户后台运行 server.py，
-   * 这里弹一次提示，然后轮询等待最多 20 秒）。
-   */
+  // ── 视图切换（结构化 / Markdown）────────────────────────────────────
+  _setViewMode(mode) {
+    this._viewMode = mode;
+    const btnS = this._c.querySelector('#btn-view-structured');
+    const btnM = this._c.querySelector('#btn-view-markdown');
+    const sbox = this._c.querySelector('#report-structured');
+    const mbox = this._c.querySelector('#report-markdown');
+
+    if (mode === 'structured') {
+      btnS.className = btnS.className.replace('bg-white text-gray-500 hover:bg-gray-50','') + ' bg-blue-600 text-white';
+      btnM.className = btnM.className.replace('bg-blue-600 text-white','') + ' bg-white text-gray-500 hover:bg-gray-50';
+      sbox.classList.remove('hidden');
+      mbox.classList.add('hidden');
+    } else {
+      btnM.className = btnM.className.replace('bg-white text-gray-500 hover:bg-gray-50','') + ' bg-blue-600 text-white';
+      btnS.className = btnS.className.replace('bg-blue-600 text-white','') + ' bg-white text-gray-500 hover:bg-gray-50';
+      mbox.classList.remove('hidden');
+      sbox.classList.add('hidden');
+      if (!mbox.dataset.raw && this._lastRawReport && this._lastRtype === 'structured') {
+        mbox.dataset.raw = typeof this._lastRawReport === 'string'
+          ? this._lastRawReport
+          : JSON.stringify(this._lastRawReport, null, 2);
+        mbox.innerHTML = this._md(mbox.dataset.raw);
+      }
+    }
+  }
+
+  // ── 自动启动 server ───────────────────────────────────────────────────
   async _ensureServer() {
     if (this._online) return true;
     if (this._serverStarting) {
@@ -1299,11 +1549,8 @@ class RunTab {
       return false;
     }
     this._serverStarting = true;
-
-    // 弹出提示
     this._t.show('需要本地服务，请运行：python portal/server.py', 'warning', 8000);
 
-    // 轮询等待 20 秒
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 1000));
@@ -1313,7 +1560,6 @@ class RunTab {
           this._online = true;
           this._serverStarting = false;
           this._updateOnlineUI();
-          // 通知 app.js 的全局状态（通过自定义事件）
           window.dispatchEvent(new CustomEvent('server-online'));
           return true;
         }
@@ -1324,7 +1570,7 @@ class RunTab {
     return false;
   }
 
-  // ── 深度分析 ──────────────────────────────────────────────
+  // ── 深度分析 ──────────────────────────────────────────────────────────
   async _deepAnalyze() {
     const code = this._c.querySelector('#run-code').value.trim().toUpperCase();
     const name = this._c.querySelector('#run-name').value.trim();
@@ -1333,7 +1579,6 @@ class RunTab {
     const dims = [...this._selDims];
     if (!dims.length) { this._t.show('请至少选择一个分析维度', 'warning'); return; }
 
-    // ★ 自动激活 server
     const ok = await this._ensureServer();
     if (!ok) return;
 
@@ -1354,24 +1599,23 @@ class RunTab {
       this._t.show(`启动失败: ${e.message}`, 'error');
       this._resetBtns(); return;
     }
-    this._listenSSE(taskId, 'structured');
+    this._listenSSE(taskId, 'structured', code, name || code);
   }
 
-  // ── 快速任务 ──────────────────────────────────────────────
+  // ── 快速任务 ──────────────────────────────────────────────────────────
   async _quickRun(mode) {
-    // ★ 自动激活 server
     const ok = await this._ensureServer();
     if (!ok) return;
 
-    const force = this._c.querySelector(mode === 'market' ? '#run-market-force' : '#run-full-force')?.checked;
-    this._prepareLog(mode === 'market' ? '🌐 大盘复盘' : '⚡ 全量分析');
+    const label = mode === 'market' ? '🌐 大盘复盘' : '⚡ 全量分析';
+    this._prepareLog(label);
 
     let taskId;
     try {
       const res = await fetch(`${SERVER_RUN}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, force_run: !!force, no_notify: true }),
+        body: JSON.stringify({ mode, force_run: false, no_notify: true }),
       });
       const d = await res.json();
       if (!d.ok) throw new Error(d.error);
@@ -1380,16 +1624,12 @@ class RunTab {
       this._t.show(`启动失败: ${e.message}`, 'error');
       this._resetBtns(); return;
     }
-    this._listenSSE(taskId, 'markdown');
+    this._listenSSE(taskId, 'markdown', '', label);
   }
 
-  // ── 日志区准备 ────────────────────────────────────────────
+  // ── 日志区准备（切换到日志子面板）──────────────────────────────────
   _prepareLog(title) {
     if (this._sse) { this._sse.close(); this._sse = null; }
-    const logSec = this._c.querySelector('#run-log-section');
-    const rptSec = this._c.querySelector('#run-report-section');
-    logSec.classList.remove('hidden');
-    rptSec.classList.add('hidden');
     this._c.querySelector('#log-box').innerHTML = '';
     this._c.querySelector('#report-structured').innerHTML = '';
     const badge = this._c.querySelector('#run-badge');
@@ -1397,13 +1637,14 @@ class RunTab {
     badge.className = 'text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium';
     this._appendLog(title, 'info');
     this._disableBtns();
+    // 自动切换到日志子面板
+    this._switchSubTab('log');
   }
 
-  // ── SSE 监听 ──────────────────────────────────────────────
-  _listenSSE(taskId, rtype) {
+  // ── SSE 监听 ──────────────────────────────────────────────────────────
+  _listenSSE(taskId, rtype, code = '', subject = '') {
     const sse = new EventSource(`${SERVER_RUN}/run/stream/${taskId}`);
     this._sse = sse;
-    const box = this._c.querySelector('#log-box');
     sse.onmessage = e => {
       const d = JSON.parse(e.data);
       this._appendLog(d.log, d.status === 'error' ? 'error' : 'default');
@@ -1416,17 +1657,19 @@ class RunTab {
       badge.textContent = ok ? '完成 ✓' : '失败 ✗';
       badge.className = `text-xs px-2 py-0.5 rounded-full font-medium ${ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`;
       this._resetBtns();
-      if (d.has_report) this._loadReport(taskId, d.report_type || rtype);
+      if (d.has_report) {
+        this._loadReport(taskId, d.report_type || rtype, code, subject);
+      }
     });
     sse.onerror = () => {
       sse.close(); this._sse = null;
       this._appendLog('⚠️ 连接断开，拉取结果...', 'warn');
-      setTimeout(() => this._loadReport(taskId, rtype), 600);
+      setTimeout(() => this._loadReport(taskId, rtype, code, subject), 600);
       this._resetBtns();
     };
   }
 
-  async _loadReport(taskId, rtype) {
+  async _loadReport(taskId, rtype, code = '', subject = '') {
     try {
       const res = await fetch(`${SERVER_RUN}/run/report/${taskId}`);
       const d = await res.json();
@@ -1436,61 +1679,176 @@ class RunTab {
         d.logs.slice(ex).forEach(l => this._appendLog(l));
       }
       if (d.report) {
-        rtype === 'structured' ? this._showStructured(d.report) : this._showMarkdown(d.report);
+        this._lastRtype = rtype;
+        rtype === 'structured'
+          ? this._showStructured(d.report, code, subject, taskId)
+          : this._showMarkdown(d.report, code, subject, taskId);
       }
     } catch {}
   }
 
-  _showStructured(json) {
+  _showStructured(json, code = '', subject = '', taskId = '') {
     try {
       const rpt = typeof json === 'string' ? JSON.parse(json) : json;
-      const sec = this._c.querySelector('#run-report-section');
-      this._c.querySelector('#report-markdown').classList.add('hidden');
-      sec.classList.remove('hidden');
+      this._lastRawReport = rpt;
+      const sbox  = this._c.querySelector('#report-structured');
+      const mbox  = this._c.querySelector('#report-markdown');
+      const empty = this._c.querySelector('#report-empty');
+      sbox.classList.remove('hidden');
+      mbox.classList.add('hidden');
+      mbox.dataset.raw = '';
+      if (empty) empty.classList.add('hidden');
       this._report.render(rpt);
-      sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch { this._showMarkdown(String(json)); }
+      this._setViewMode('structured');
+      // 从报告中提取评分和信号
+      const score  = rpt?.summary?.score  ?? rpt?.score  ?? null;
+      const signal = rpt?.summary?.signal ?? rpt?.signal ?? '';
+      this._saveHistory({ code, name: subject, score, signal, taskId });
+      // 红点 + 切到报告子面板
+      this._c.querySelector('#tab-report-badge')?.classList.remove('hidden');
+      this._switchSubTab('report');
+    } catch { this._showMarkdown(String(json), code, subject, taskId); }
   }
 
-  _showMarkdown(md) {
-    const sec = this._c.querySelector('#run-report-section');
-    const el  = this._c.querySelector('#report-markdown');
-    this._c.querySelector('#report-structured').innerHTML = '';
-    el.dataset.raw = md;
-    el.innerHTML   = this._md(md);
-    el.classList.remove('hidden');
-    sec.classList.remove('hidden');
-    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  _showMarkdown(md, code = '', subject = '', taskId = '') {
+    const sbox  = this._c.querySelector('#report-structured');
+    const mbox  = this._c.querySelector('#report-markdown');
+    const empty = this._c.querySelector('#report-empty');
+    this._lastRawReport = md;
+    sbox.innerHTML = '';
+    sbox.classList.add('hidden');
+    mbox.dataset.raw = md;
+    mbox.innerHTML = this._md(md);
+    mbox.classList.remove('hidden');
+    if (empty) empty.classList.add('hidden');
+    this._setViewMode('markdown');
+    this._saveHistory({ code, name: subject, score: null, signal: '', taskId });
+    // 红点 + 切到报告子面板
+    this._c.querySelector('#tab-report-badge')?.classList.remove('hidden');
+    this._switchSubTab('report');
   }
 
+  // ── 日志追加（带 [HH:MM:SS] 时间戳）────────────────────────────────
   _appendLog(line, type = 'default') {
     const box = this._c.querySelector('#log-box');
     if (!line || !box) return;
-    const div = document.createElement('div');
-    div.className = 'text-xs leading-relaxed font-mono';
+
+    const now = new Date();
+    const ts  = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map(n => String(n).padStart(2, '0')).join(':');
+
+    const row = document.createElement('div');
+    row.className = 'flex gap-2 text-xs leading-relaxed font-mono py-0.5';
+
     const colors = {
-      info:    '#6ee7b7', error: '#fca5a5',
-      warn:    '#fcd34d', default: '#d1fae5',
+      info:    '#6ee7b7',
+      error:   '#fca5a5',
+      warn:    '#fcd34d',
+      default: '#d1fae5',
     };
     let col = colors.default;
     if (/✅|成功|完成/.test(line))      col = colors.info;
     else if (/❌|失败|ERROR/.test(line)) col = colors.error;
     else if (/⚠|WARNING/.test(line))    col = colors.warn;
-    div.style.color = col;
-    div.textContent = line;
-    box.appendChild(div);
+
+    const tsEl = document.createElement('span');
+    tsEl.className   = 'shrink-0 select-none';
+    tsEl.style.color = '#4b5563';
+    tsEl.textContent = `[${ts}]`;
+
+    const msgEl = document.createElement('span');
+    msgEl.style.color = col;
+    msgEl.textContent  = line;
+
+    row.appendChild(tsEl);
+    row.appendChild(msgEl);
+    box.appendChild(row);
     box.scrollTop = box.scrollHeight;
+
+    if (this._activeSub !== 'log') {
+      this._c.querySelector('#tab-log-badge')?.classList.remove('hidden');
+    }
   }
 
+  // ── 历史记录（localStorage，最多 10 条，显示最近 5 条）──────────────
+  // 格式：[{code, name, score, signal, time, taskId}]
+  _saveHistory({ code, name, score, signal, taskId } = {}) {
+    const list = this._loadHistoryList();
+    list.unshift({
+      code:   code   || '',
+      name:   name   || code || '',
+      score:  score  ?? null,
+      signal: signal || '',
+      time:   Date.now(),
+      taskId: taskId || '',
+    });
+    if (list.length > HISTORY_MAX) list.length = HISTORY_MAX;
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch {}
+    this._renderHistory();
+  }
+
+  _loadHistoryList() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+    catch { return []; }
+  }
+
+  _renderHistory() {
+    const sec  = this._c.querySelector('#run-history');
+    const list = this._c.querySelector('#run-history-list');
+    if (!sec || !list) return;
+    const items = this._loadHistoryList().slice(0, HISTORY_SHOW);
+    if (!items.length) { sec.classList.add('hidden'); return; }
+    sec.classList.remove('hidden');
+
+    list.innerHTML = items.map((h, i) => {
+      const d    = new Date(h.time);
+      const time = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      const scoreBadge = h.score != null
+        ? `<span class="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded text-xs font-mono">${h.score}</span>`
+        : '';
+      const signalBadge = h.signal
+        ? `<span class="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs">${h.signal}</span>`
+        : '';
+      const label = h.code
+        ? `${h.code}${h.name && h.name !== h.code ? ' · ' + h.name : ''}`
+        : (h.name || '分析报告');
+      return `
+        <div class="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-xl text-xs text-gray-600
+                    hover:bg-gray-100 cursor-pointer transition-colors"
+             data-history-idx="${i}">
+          ${scoreBadge}
+          ${signalBadge}
+          <span class="flex-1 font-medium truncate">${label}</span>
+          <span class="text-gray-400 shrink-0">${time}</span>
+        </div>`;
+    }).join('');
+
+    // 点击历史条目重新加载报告
+    list.querySelectorAll('[data-history-idx]').forEach(row => {
+      row.addEventListener('click', () => {
+        const idx  = parseInt(row.dataset.historyIdx, 10);
+        const item = this._loadHistoryList()[idx];
+        if (!item?.taskId) return;
+        this._loadReport(item.taskId, 'structured', item.code, item.name);
+      });
+    });
+  }
+
+  // ── 按钮状态 ──────────────────────────────────────────────────────────
   _disableBtns() {
-    ['#btn-deep','#btn-market','#btn-full'].forEach(s =>
-      this._c.querySelector(s) && (this._c.querySelector(s).disabled = true));
+    ['#btn-deep','#btn-market','#btn-full'].forEach(s => {
+      const el = this._c.querySelector(s);
+      if (el) el.disabled = true;
+    });
   }
   _resetBtns() {
-    ['#btn-deep','#btn-market','#btn-full'].forEach(s =>
-      this._c.querySelector(s) && (this._c.querySelector(s).disabled = false));
+    ['#btn-deep','#btn-market','#btn-full'].forEach(s => {
+      const el = this._c.querySelector(s);
+      if (el) el.disabled = false;
+    });
   }
 
+  // ── 简易 Markdown -> HTML ────────────────────────────────────────────
   _md(md) {
     const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return md.split('\n').map(l => {

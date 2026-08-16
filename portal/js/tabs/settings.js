@@ -2,6 +2,8 @@
  * tabs/settings.js — 分析参数设置（纯静态，无需 server）
  * Toggle 用 JS 驱动，不依赖 Tailwind peer（innerHTML 里 peer 无效）
  */
+const SERVER = 'http://127.0.0.1:7788';
+
 export class SettingsTab {
   constructor(container, store, toast) {
     this._c = container; this._s = store; this._t = toast;
@@ -84,6 +86,48 @@ export class SettingsTab {
             详见「说明」Tab。
           </p>
         </div>
+
+        <!-- API 配置 -->
+        <div class="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden mt-4">
+          <details>
+            <summary class="px-5 py-3.5 cursor-pointer font-semibold text-gray-800 text-sm">🔐 本地 API 配置（.env）</summary>
+            <div class="px-5 pb-4 border-t border-gray-50">
+
+              <!-- LLM 子区块 -->
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mt-4 mb-3">LLM</p>
+              <div class="space-y-4">
+                ${this._envField('GEMINI_API_KEY',  'Gemini API Key',   'password', '在 aistudio.google.com 获取')}
+                ${this._envField('DEEPSEEK_API_KEY','DeepSeek API Key', 'password', '在 platform.deepseek.com 获取')}
+                ${this._envField('OPENAI_API_KEY',  'OpenAI API Key',   'password', '在 platform.openai.com 获取')}
+              </div>
+
+              <!-- 搜索 子区块 -->
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mt-5 mb-3">Search</p>
+              <div class="space-y-4">
+                ${this._envField('BOCHA_API_KEYS',  'Bocha 搜索 Key',  'password', '在 bochaai.com 获取，可选')}
+                ${this._envField('TAVILY_API_KEYS', 'Tavily 搜索 Key', 'password', '在 app.tavily.com 获取，可选')}
+              </div>
+
+              <!-- 邮件 子区块 -->
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mt-5 mb-3">Email</p>
+              <div class="space-y-4">
+                ${this._envField('EMAIL_SENDER',    '发件人邮箱',   'email',    '')}
+                ${this._envField('EMAIL_PASSWORD',  '邮箱授权码',   'password', '非登录密码，在邮箱设置中生成')}
+                ${this._envField('EMAIL_RECEIVERS', '收件人邮箱',   'text',     '多个用逗号分隔')}
+              </div>
+
+              <!-- 底部按钮 & 状态 -->
+              <div class="flex items-center gap-3 mt-5 pt-4 border-t border-gray-100">
+                <button id="btn-save-env"
+                  class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 active:scale-95 transition-all">
+                  💾 保存到本地 .env
+                </button>
+                <span id="env-status" class="text-xs text-gray-400">正在读取...</span>
+              </div>
+
+            </div>
+          </details>
+        </div>
       </div>`;
 
     this._bindToggle('cfg-market-review-btn', 'cfg-market-thumb', 'cfg-market-review',
@@ -103,6 +147,11 @@ export class SettingsTab {
     this._bindInput('cfg-email-prefix',  'email.subject_prefix');
 
     this._s.subscribe(state => this._sync(state));
+
+    this._c.querySelector('#btn-save-env')
+      ?.addEventListener('click', () => this._saveEnv());
+
+    this._loadEnvStatus();
   }
 
   _row(label, control, hint = '') {
@@ -165,5 +214,68 @@ export class SettingsTab {
     thumb.classList.toggle('translate-x-5', on);
     thumb.classList.toggle('translate-x-0', !on);
     sideEffect?.(on);
+  }
+
+  /** 渲染单个 .env 字段行 */
+  _envField(key, label, type = 'text', help = '') {
+    return `
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">${label}</label>
+        <input type="${type}" id="env-${key}" autocomplete="off" spellcheck="false"
+          class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent font-mono"
+          placeholder="${key}" />
+        ${help ? `<p class="text-xs text-gray-400 mt-1">${help}</p>` : ''}
+      </div>`;
+  }
+
+  /** 从 /env 读取掩码值填充各 input */
+  async _loadEnvStatus() {
+    const status = this._c.querySelector('#env-status');
+    try {
+      const res = await fetch(`${SERVER}/env`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const keys = [
+        'GEMINI_API_KEY','DEEPSEEK_API_KEY','OPENAI_API_KEY',
+        'BOCHA_API_KEYS','TAVILY_API_KEYS',
+        'EMAIL_SENDER','EMAIL_PASSWORD','EMAIL_RECEIVERS'
+      ];
+      keys.forEach(k => {
+        const el = this._c.querySelector(`#env-${k}`);
+        if (el && data[k]) el.value = data[k];
+      });
+      if (status) status.textContent = '已从服务器读取';
+    } catch (e) {
+      if (status) status.textContent = `读取失败：${e.message}`;
+    }
+  }
+
+  /** 收集非空 input 值，POST /env 保存 */
+  async _saveEnv() {
+    const status = this._c.querySelector('#env-status');
+    const keys = [
+      'GEMINI_API_KEY','DEEPSEEK_API_KEY','OPENAI_API_KEY',
+      'BOCHA_API_KEYS','TAVILY_API_KEYS',
+      'EMAIL_SENDER','EMAIL_PASSWORD','EMAIL_RECEIVERS'
+    ];
+    const payload = {};
+    keys.forEach(k => {
+      const el = this._c.querySelector(`#env-${k}`);
+      if (el && el.value.trim()) payload[k] = el.value.trim();
+    });
+    if (status) status.textContent = '保存中...';
+    try {
+      const res = await fetch(`${SERVER}/env`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      this._t?.('已保存到 .env', 'success');
+      if (status) status.textContent = '保存成功';
+    } catch (e) {
+      this._t?.(`保存失败：${e.message}`, 'error');
+      if (status) status.textContent = `保存失败：${e.message}`;
+    }
   }
 }
