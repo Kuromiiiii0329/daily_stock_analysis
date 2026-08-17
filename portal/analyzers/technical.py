@@ -855,68 +855,68 @@ class TechnicalAnalyzer(BaseAnalyzer):
         div_summary = ""
         for s in sections:
             if s.key == "divergence" and s.content:
-                first_line = s.content.split("\n")[0]
+                first_line = s.content.strip().split("\n")[0]
                 div_summary = f"背离检测：{first_line}"
                 break
 
-        # 近10日 K 线
-        tail10_str = df.tail(10)[["date", "open", "high", "low", "close", "volume"]].to_string(index=False)
+        # 近5日最高/最低
+        tail5_high = round(float(df.tail(5)["high"].max()), 2)
+        tail5_low  = round(float(df.tail(5)["low"].min()), 2)
 
-        prompt = f"""你是顶尖A股技术分析师，请对 {stock_name} 进行全面深度的技术面精讲分析。
+        prompt = f"""你是顶尖A股技术分析师，请对 {stock_name}（当前价{close}）进行技术面精讲分析。
 
-【当前行情快照】
-- 当前价格：{close}（近5日变动：{chg5:+.2f}%）
-- 近5日日内变化：{', '.join(daily_chg)}
-
-【近10日K线数据】
-{tail10_str}
-
-【技术指标量化数据】
-均线系统：MA5={ma5}  MA10={ma10}  MA20={ma20}  MA60={ma60}  MA120={ma120}（半年线）  MA250={ma250}（年线）
-MACD：DIF={dif}  DEA={dea}  MACD柱={bar}
-RSI：RSI(6)={rsi6}  RSI(12)={r12}
-KDJ：K={k}  D={d_}  J={j}
-布林带：上轨={boll_u}  中轨={boll_m}  下轨={boll_l}
-威廉WR(14)={wr14}（>-20超买，<-80超卖）
-量比={vol_r}x（>2放量，<0.5缩量）
+【指标快照】
+均线：MA5={ma5}  MA10={ma10}  MA20={ma20}  MA60={ma60}  MA120={ma120}  MA250={ma250}
+MACD：DIF={dif}  DEA={dea}  柱={bar}（{'零轴上方' if dif > 0 else '零轴下方'}）
+RSI(6)={rsi6}  RSI(12)={r12}  KDJ K={k} D={d_} J={j}
+布林带：上{boll_u}  中{boll_m}  下{boll_l}  WR(14)={wr14}
+量比={vol_r}x  近5日涨跌={chg5:+.2f}%  近5日区间=[{tail5_low},{tail5_high}]
 {div_summary}
 
-【要求】请按以下结构逐项深度分析，每项都必须结合以上数据给出**具体数字和判断依据**：
+请按以下6个方面分析，每项结合具体数值，总计400字以内：
 
-## 1. 趋势综合判断
-- 大趋势方向（上升/震荡/下降），判断依据（均线排列 + 价格与MA60关系）
-- 短期趋势（5-10日维度），当前属于反弹/回调/突破/整理哪种状态
+## 1. 趋势判断
+均线排列（多头/空头/缠绕）+ 价格与MA60/MA120/MA250的位置关系 → 大/中/短三级趋势结论
 
-## 2. 动能与指标综合解读
-- MACD 当前状态：零轴位置、金死叉情况、柱线扩缩方向，对应的买卖含义
-- RSI 解读：当前值区间（超买/超卖/中性），与价格走势是否出现背离
-- KDJ 解读：J值位置判断（是否极值区），金死叉情况，当前意义
-- 多指标共振：上述指标是否同向共振，共振程度如何
+## 2. 动能解读
+MACD零轴位置+柱线扩缩含义、RSI区间判断、KDJ J值状态、多指标是否共振
 
-## 3. 关键价格位分析
-- **当前阻力位**（列出2-3个，标明来源，如"MA20={ma20}构成近期压力"）
-- **当前支撑位**（列出2-3个，标明来源，如"布林下轨={boll_l}为技术支撑"）
-- **关键变盘价位**（突破或跌破哪个价格将改变当前趋势判断，标注具体价格）
+## 3. 关键价位
+- 阻力：列2个具体价格（注明来源）
+- 支撑：列2个具体价格（注明来源）
+- 变盘位：突破/跌破哪个价改变趋势
 
-## 4. 量价配合分析
-- 量比={vol_r}x 结合近期价格走势说明量价关系
-- 是否存在放量滞涨、缩量下跌或其他异常量价信号
+## 4. 量价与风险
+量比+近期价格的量价关系解读；当前最主要的1个技术风险
 
-## 5. 近期风险提示
-- 当前最主要的技术风险点（顶背离/超买/均线压制/成交量不配合等），具体说明
-- 需要警惕的关键价位（跌破/突破哪个价格意味着技术走坏/走好）
+## 5. 操作建议
+短线（1-5日）：入场区间+止损+目标（具体数字）
+中线（1-4周）：建仓条件+止损+目标（具体数字）
 
-## 6. 操作建议（必须给出具体参数）
-- **短线操作**（1-5日）：方向 + 入场价位区间 + 止损价 + 目标价
-- **中线操作**（1-4周）：方向 + 建仓条件 + 止损价 + 目标价
-- **仓位建议**：当前技术面看多还是看空，建议仓位比例（如：控制在3成以内/可持至5成等）
+## 6. 仓位建议
+当前看多/看空强度，建议仓位比例
 
 输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
 
         try:
             content = llm_call(prompt).strip()
         except Exception as e:
+            logger.warning("[llm_tech] LLM 调用失败 %s: %s", stock_name, e)
             content = f"技术综合分析失败：{e}"
+
+        # LLM 返回空时用规则降级
+        if not content:
+            logger.warning("[llm_tech] LLM 返回空内容，降级为规则摘要")
+            ma_line = f"MA5={ma5} MA10={ma10} MA20={ma20} MA60={ma60}"
+            content = (
+                f"**技术指标快照（LLM 未返回）**\n"
+                f"- 均线：{ma_line}\n"
+                f"- MACD：DIF={dif} DEA={dea} 柱={bar}（{'零轴上方' if dif > 0 else '零轴下方'}）\n"
+                f"- RSI(6)={rsi6}  KDJ J={j}\n"
+                f"- 布林带：上{boll_u} 中{boll_m} 下{boll_l}\n"
+                f"- 量比={vol_r}x\n"
+                f"\n（LLM 综合精讲暂不可用，请检查 LLM API 配置）"
+            )
 
         score, signal = 50, "hold"
         signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
