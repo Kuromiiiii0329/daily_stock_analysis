@@ -26,6 +26,24 @@ export class SettingsTab {
               <option value="full">完整</option>
             </select>`, '影响邮件内容详细程度')}
 
+          ${this._row('逐指标 LLM 点评', `
+            <select id="cfg-llm-mode" class="form-select w-48">
+              <option value="batch">批量一次（快，推荐）</option>
+              <option value="per_indicator">逐指标详细（慢，更深入）</option>
+            </select>`, 'HTML报告对每个技术指标做偏多/偏空点评')}
+
+          ${this._row('分析后自动打开报告', `
+            <div class="flex items-center gap-3">
+              <button id="cfg-openhtml-btn" type="button"
+                class="relative flex-shrink-0 w-10 h-5 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 bg-blue-500"
+                role="switch" aria-checked="true">
+                <span id="cfg-openhtml-thumb"
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform translate-x-5"></span>
+              </button>
+              <input type="checkbox" id="cfg-openhtml" class="hidden" checked />
+              <span class="text-sm text-gray-700" id="cfg-openhtml-label">已启用</span>
+            </div>`, '生成 HTML 后用浏览器自动打开')}
+
           ${this._row('大盘复盘', `
             <div class="flex items-center gap-3">
               <button id="cfg-market-review-btn" type="button"
@@ -149,7 +167,15 @@ export class SettingsTab {
     this._bindToggle('cfg-force-btn', 'cfg-force-thumb', 'cfg-force',
       (on) => { this._s.set('force_run', on); });
 
+    this._bindToggle('cfg-openhtml-btn', 'cfg-openhtml-thumb', 'cfg-openhtml',
+      (on) => {
+        const lbl = this._c.querySelector('#cfg-openhtml-label');
+        if (lbl) lbl.textContent = on ? '已启用' : '已关闭';
+        this._s.set('auto_open_html', on);
+      });
+
     this._bindInput('cfg-report-type',   'report_type');
+    this._bindInput('cfg-llm-mode',      'llm_note_mode');
     this._bindInput('cfg-market-region', 'market_review_region');
     this._bindInput('cfg-workers',       'max_workers',    v => Math.max(1, Math.min(5, +v || 1)));
     this._bindInput('cfg-delay',         'analysis_delay', v => Math.max(0, +v || 0));
@@ -200,6 +226,7 @@ export class SettingsTab {
   _sync(state) {
     const sv = (id, val) => { const el = this._c.querySelector(`#${id}`); if (el) el.value = val ?? ''; };
     sv('cfg-report-type',   state.report_type);
+    sv('cfg-llm-mode',      state.llm_note_mode || 'batch');
     sv('cfg-market-region', state.market_review_region);
     sv('cfg-workers',       state.max_workers);
     sv('cfg-delay',         state.analysis_delay);
@@ -209,6 +236,9 @@ export class SettingsTab {
       !!state.market_review_enabled,
       (on) => { const l = this._c.querySelector('#cfg-market-label'); if (l) l.textContent = on ? '已启用' : '已关闭'; });
     this._applyToggle('cfg-force-btn', 'cfg-force-thumb', 'cfg-force', !!state.force_run);
+    this._applyToggle('cfg-openhtml-btn', 'cfg-openhtml-thumb', 'cfg-openhtml',
+      state.auto_open_html !== false,
+      (on) => { const l = this._c.querySelector('#cfg-openhtml-label'); if (l) l.textContent = on ? '已启用' : '已关闭'; });
   }
 
   _applyToggle(btnId, thumbId, hiddenId, on, sideEffect) {

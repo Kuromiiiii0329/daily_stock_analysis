@@ -13,6 +13,10 @@ Portal 是一个**独立的股票分析系统**，分两种使用模式：
 
 **批量分析**：在「自选股」Tab 用 checkbox 勾选多只股票（勾选状态本地持久化），到「立即运行」点「📑 批量分析勾选的自选股」，队列按顺序逐个生成报告。添加股票时若 server 在线会自动查询名称，列表显示股票名称而非代码。
 
+**HTML 报告**：每次个股/大盘分析后，server 生成图文并茂的独立 HTML 报告（K线蜡烛图/雷达图/各指标卡片 + 🤖 逐指标 LLM 点评偏多/偏空/影响）并自动用浏览器打开。同一股票只保留最新报告（标题记日期），历史列表点击可重新打开。逐指标点评有「批量/逐指标详细」双模式（设置页切换），结果按交易日缓存复用。
+
+**大盘复盘**：点「🌐 大盘复盘」分析上证指数+创业板指（指数历史K线跑完整技术指标含 MA250 年线/超买超卖/背离），不判断交易日以最新交易日为准，两指数汇总成一份 HTML。
+
 ---
 
 ## 文件结构
@@ -28,11 +32,14 @@ portal/
 ├── analyzers/                  深度分析引擎（全在 portal/ 内）
 │   ├── __init__.py             注册所有分析器
 │   ├── base.py                 BaseAnalyzer 基类 + 数据类定义
-│   ├── technical.py            技术面（MA/MACD/RSI/KDJ/布林带/波浪/缠论）
+│   ├── technical.py            技术面（MA/MACD/RSI/KDJ/布林带/超买超卖/背离/波浪/缠论）
 │   ├── fundamental.py          基本面（财报/成长/分红/主力资金/估值）
 │   ├── industry.py             产业链（板块真实数据 + LLM识别关键词 + 搜索）
 │   ├── sector.py               板块数据层（efinance 个股→板块 + 板块K线 + 缓存降级）
 │   └── merger.py               合并报告（技术40% + 基本面40% + 产业链20%）
+├── report_html.py              独立 HTML 报告生成器（个股+大盘两套模板,ECharts,去重,自动打开）
+├── llm_notes.py                逐指标 LLM 点评（偏多/偏空/影响,双模式+交易日缓存）
+├── analyzers/market.py         轻量大盘分析器（上证+创业板,复用技术指标+MA250年线）
 ├── lib/                        捆绑的依赖库（portal 独立运行所需）
 │   ├── src/                    核心分析模块副本
 │   └── data_provider/          数据源模块副本
@@ -41,8 +48,12 @@ portal/
 │   │   └── {股票代码}/
 │   │       ├── kline.csv       日线 K 线（增量更新）
 │   │       ├── meta.json       元信息（名称、关键词、最后更新时间）
+│   │       ├── llm_notes/{日期}.json  逐指标 LLM 点评缓存（同股同日复用）
 │   │       └── commodities/    相关商品/产品价格搜索缓存
 │   │           └── {关键词}.csv
+│   ├── reports/                独立 HTML 报告（自动打开，同 code 只留最新）
+│   │   ├── {股票代码}_{日期}.html
+│   │   └── market_{日期}.html  大盘复盘（上证+创业板）
 │   └── sectors/                板块数据（全市场共享，非按股票）
 │       ├── boards/{代码}.csv    个股所属板块（TTL 24h）
 │       ├── kline/{BK}.csv       板块日线（增量，efinance/同花顺双源）
@@ -87,7 +98,7 @@ portal/
 | `server.py` | HTTP 服务（7788端口）：`/health` `/save` `/run` `/analyze` + SSE流 | 新增 API 接口 |
 | `data_cache.py` | K 线增量缓存 + 商品搜索缓存（TTL自适应） | 调整缓存策略 |
 | `send_report.py` | 读取 `reports/*.md`，发送 HTML 邮件 | 修改邮件格式 |
-| `analyzers/technical.py` | MA/MACD/RSI/KDJ/布林带/量价（pandas计算）+ 形态/波浪/缠论（LLM） | 新增技术指标 |
+| `analyzers/technical.py` | MA/MACD/RSI/KDJ/布林带/量价 + **超买超卖综合(RSI+KDJ+WR+布林)/背离引擎(分形摆动点+常规&隐藏背离+成熟度状态机 迹象浮现→进行中→已确认)** + 形态/波浪/缠论（LLM） | 新增技术指标 |
 | `analyzers/fundamental.py` | 财报/成长/分红/主力资金/估值（复用 fundamental_adapter） | 新增财务指标 |
 | `analyzers/industry.py` | 板块归属/景气/相对强弱（真实数据）+ 产业链关键词/竞争/政策（LLM） | 新增行业关键词模板 |
 | `analyzers/sector.py` | 板块数据层：efinance 个股→板块 + 板块K线 + 全市场快照 + 缓存降级 | 调整黑名单/数据源 |
@@ -141,8 +152,10 @@ portal/data/stocks/002466/
 |------|------|------|
 | `/health` | GET | 健康检查，用于前端检测服务状态 |
 | `/save` | POST | 写入 `config/watchlist.json` |
-| `/run` | POST | 启动快速任务（大盘复盘/全量分析），返回 task_id |
-| `/analyze` | POST | 启动深度双维度分析，返回 task_id |
+| `/run` | POST | 启动快速任务（全量分析），返回 task_id |
+| `/analyze` | POST | 深度双维度分析 → 生成独立 HTML + 逐指标 LLM 点评 + 自动打开浏览器（llm_mode/open_report 参数） |
+| `/market_review` | POST | 大盘复盘（上证+创业板），生成一份 HTML 并打开（废弃旧 main.py 大盘链路） |
+| `/open_report` | GET | `?code=xxx`（`__market__`=大盘）按 code 打开最新 HTML 报告 |
 | `/run/stream/{id}` | GET | SSE 实时推送任务日志 |
 | `/run/report/{id}` | GET | 获取任务完成后的报告 |
 | `/run/status/{id}` | GET | 查询任务状态 |

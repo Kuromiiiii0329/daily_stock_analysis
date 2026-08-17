@@ -111,22 +111,41 @@ def _build_conclusion(
     overall_signal: str,
     llm_call,
 ) -> str:
-    """用 LLM 生成一段话综合结论，无 LLM 时用规则拼接。"""
+    """用 LLM 生成一段话综合结论，无 LLM 时用规则拼接。
+
+    喂给 LLM 的不只是各维度一句话摘要，而是【每个子模块的指标明细】
+    （标题+信号+评分+首行结论），让 LLM 有据可依，给出客观具体的结论。
+    """
     if llm_call:
-        summaries = "\n".join(
-            f"【{r.name}】（评分{r.score}/100，信号:{r.signal}）：{r.summary}"
-            for r in results if not r.error
-        )
-        prompt = f"""你是一位专业股票分析师。
-请根据以下各维度分析摘要，为 {stock_name}（{stock_code}）生成一段 100-150 字的综合投资结论。
-结论要具体、务实，直接点明核心矛盾和操作建议。
+        # 组装各维度 + 子模块明细上下文
+        blocks = []
+        for r in results:
+            if r.error:
+                blocks.append(f"### {r.name}（分析失败：{r.error}）")
+                continue
+            lines = [f"### {r.name}（维度评分 {r.score}/100，信号：{SIGNAL_LABELS.get(r.signal, r.signal)}）"]
+            for s in r.sections:
+                # 取每个子模块的首行结论 + 信号 + 评分
+                first = (s.content or "").strip().split("\n")[0].replace("**", "")
+                sig_label = SIGNAL_LABELS.get(s.signal, s.signal)
+                lines.append(f"- {s.title}（{sig_label}/{s.score}）：{first}")
+            blocks.append("\n".join(lines))
+        detail = "\n\n".join(blocks)
 
-各维度摘要：
-{summaries}
+        prompt = f"""你是一位严谨、务实的 A 股分析师。请基于下面 {stock_name}（{stock_code}）各维度、各指标的**具体数据**，给出一段客观的综合投资结论。
 
-综合评分：{overall_score}/100，综合信号：{SIGNAL_LABELS.get(overall_signal, overall_signal)}
+各维度指标明细：
+{detail}
 
-请直接输出结论段落，不要加标题："""
+系统加权综合评分：{overall_score}/100，综合信号：{SIGNAL_LABELS.get(overall_signal, overall_signal)}
+
+请严格按以下要求输出（总计 180-280 字）：
+1. **核心判断**：一句话给出当前定性（强势/偏多/震荡/偏空/弱势），必须引用上面 2-3 个最关键的具体指标数值作为依据（如"MACD金叉+RSI 68 偏高""底背离迹象浮现""个股跑输所属板块 α=-1.3%"）。
+2. **多空依据**：分别列出「看多理由」和「看空理由」各 1-2 条，引用具体指标，客观呈现分歧，不要只报喜或只报忧。
+3. **操作建议**：给出明确、可执行的建议——包括：观望还是参与、若参与建议的关注/买入价位区间或触发条件、止损参考位、仓位建议（轻仓/半仓等）。避免"仅供参考"式空话。
+4. **风险提示**：一句话点明当前最需警惕的风险。
+
+要求：客观中立、数据驱动、拒绝套话。直接输出结论，不要加标题、不要分点编号，用自然段落+ 关键处加粗。"""
         try:
             return llm_call(prompt).strip()
         except Exception:

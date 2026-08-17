@@ -162,6 +162,12 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             self._handle_quote(qs)
 
+        elif path == "/open_report":
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            code = (qs.get("code", [""])[0]).strip()
+            self._handle_open_report(code)
+
         elif path == "/backtest":
             from urllib.parse import urlparse, parse_qs
             qs = parse_qs(urlparse(self.path).query)
@@ -220,6 +226,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_run(payload)
         elif path == "/analyze":
             self._handle_analyze(payload)
+        elif path == "/market_review":
+            self._handle_market_review(payload)
         elif path == "/env":
             self._handle_set_env(payload)
         else:
@@ -275,6 +283,9 @@ class Handler(BaseHTTPRequestHandler):
         env = os.environ.copy()
         env["REPORT_TYPE"] = report_type
         env["PYTHONUNBUFFERED"] = "1"  # 确保实时输出日志
+        # Windows 子进程默认 cp1252，写中文日志会 UnicodeEncodeError；强制 UTF-8
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
 
         # 如果 mode=stock 且有 stocks，也通过环境变量注入
         if mode == "stock" and stocks:
@@ -382,6 +393,8 @@ class Handler(BaseHTTPRequestHandler):
         stock_name  = payload.get("stock_name", stock_code)
         dimensions  = payload.get("dimensions", ["technical", "fundamental", "industry"])
         modules_map = payload.get("modules", {})
+        llm_mode    = payload.get("llm_mode", "batch")       # batch | per_indicator
+        open_report = payload.get("open_report", True)
 
         task_id = uuid.uuid4().hex[:12]
         with _tasks_lock:
@@ -399,12 +412,51 @@ class Handler(BaseHTTPRequestHandler):
 
         thread = threading.Thread(
             target=_run_deep_analysis_task,
-            args=(task_id, stock_code, stock_name, dimensions, modules_map),
+            args=(task_id, stock_code, stock_name, dimensions, modules_map, llm_mode, open_report),
             daemon=True,
         )
         thread.start()
         logger.info("深度分析任务 %s 已启动: %s (%s)", task_id, stock_name, stock_code)
         self._send_json(200, {"ok": True, "task_id": task_id})
+
+    def _handle_market_review(self, payload: dict):
+        """POST /market_review — 大盘复盘（上证+创业板），生成一份 HTML 并打开。"""
+        open_report = payload.get("open_report", True)
+        task_id = uuid.uuid4().hex[:12]
+        with _tasks_lock:
+            _tasks[task_id] = {
+                "status":      "pending",
+                "logs":        [],
+                "report":      "",
+                "report_type": "market",
+                "pid":         None,
+                "created_at":  datetime.now(TZ_CN).isoformat(),
+                "task_kind":   "market",
+            }
+        thread = threading.Thread(
+            target=_run_market_review_task,
+            args=(task_id, open_report),
+            daemon=True,
+        )
+        thread.start()
+        logger.info("大盘复盘任务 %s 已启动", task_id)
+        self._send_json(200, {"ok": True, "task_id": task_id})
+
+    def _handle_open_report(self, code: str):
+        """GET /open_report?code=xxx — 按 code 找最新 HTML 报告并用浏览器打开。"""
+        try:
+            from portal.report_html import find_latest_stock_html, find_latest_market_html, open_in_browser
+            if code == "__market__" or not code:
+                path = find_latest_market_html()
+            else:
+                path = find_latest_stock_html(code.upper())
+            if not path or not path.exists():
+                self._send_json(404, {"ok": False, "error": "未找到该报告的 HTML，请重新分析生成"})
+                return
+            opened = open_in_browser(path)
+            self._send_json(200, {"ok": True, "path": str(path), "opened": opened})
+        except Exception as e:
+            self._send_json(500, {"ok": False, "error": str(e)})
 
     def _handle_get_env(self):
         """GET /env — 返回 .env 中已配置的白名单 key，value 用星号掩码（前3后3）。"""
@@ -639,6 +691,8 @@ def _run_deep_analysis_task(
     stock_name: str,
     dimensions: list,
     modules_map: dict,
+    llm_mode: str = "batch",
+    open_report: bool = True,
 ):
     """在后台线程中运行双维度深度分析。"""
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -782,8 +836,38 @@ def _run_deep_analysis_task(
         except Exception as e:
             logger.warning("保存 meta 失败: %s", e)
 
+        # ── 逐指标 LLM 点评（双模式 + 交易日缓存）────────────
+        try:
+            from portal.llm_notes import generate_notes
+            from portal.data_cache import _last_trading_date
+            trade_date = _last_trading_date()
+            tech_sections = [s for dim in final_report.get("dimensions", [])
+                             if dim.get("dimension") == "technical"
+                             for s in dim.get("sections", [])]
+            notes = generate_notes(stock_code, stock_name, trade_date,
+                                   tech_sections, llm_call, mode=llm_mode, log=log)
+            final_report["llm_notes"] = notes
+        except Exception as e:
+            logger.warning("逐指标点评失败: %s", e)
+            final_report["llm_notes"] = {}
+
+        # ── 生成独立 HTML 报告 + 自动打开 ─────────────────────
+        html_path = None
+        try:
+            from portal.report_html import render_stock_report, open_in_browser
+            html_path = render_stock_report(final_report, final_report.get("llm_notes"))
+            log(f"📄 HTML 报告已生成：{html_path}")
+            if open_report:
+                open_in_browser(html_path, log)
+        except Exception as e:
+            logger.warning("生成 HTML 报告失败: %s", e)
+            log(f"⚠️ HTML 报告生成失败：{e}")
+
         with _tasks_lock:
             _tasks[task_id]["status"] = "done"
+            if html_path:
+                final_report["html_path"] = str(html_path)
+                _tasks[task_id]["html_path"] = str(html_path)
             _tasks[task_id]["report"] = json.dumps(final_report, ensure_ascii=False, default=_json_default)
             _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
 
@@ -792,6 +876,58 @@ def _run_deep_analysis_task(
     except Exception as e:
         logger.exception("Deep analysis task %s failed: %s", task_id, e)
         logs.append(f"[{datetime.now(TZ_CN).strftime('%H:%M:%S')}] ❌ 分析失败：{e}")
+        with _tasks_lock:
+            _tasks[task_id]["status"] = "error"
+            _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
+
+
+def _run_market_review_task(task_id: str, open_report: bool = True):
+    """后台线程：大盘复盘（上证+创业板）→ 一份 HTML → 打开。"""
+    sys.path.insert(0, str(PROJECT_ROOT))
+    logs = _tasks[task_id]["logs"]
+
+    def log(msg):
+        ts = datetime.now(TZ_CN).strftime("%H:%M:%S")
+        logs.append(f"[{ts}] {msg}")
+        logger.info("[market %s] %s", task_id, msg)
+
+    with _tasks_lock:
+        _tasks[task_id]["status"] = "running"
+        _tasks[task_id]["started_at"] = datetime.now(TZ_CN).isoformat()
+
+    try:
+        log("🌐 开始大盘复盘（上证指数 + 创业板指）")
+        _load_dotenv()
+        llm_call = _make_llm_caller(log)
+
+        from portal.analyzers.market import MarketAnalyzer
+        mkt = MarketAnalyzer()
+        results = mkt.analyze_all(llm_call, log)
+        if not results:
+            raise RuntimeError("未获取到任何指数数据")
+
+        log("📝 生成大盘整体研判...")
+        overall = mkt.build_overall_summary(results, llm_call, log)
+
+        from portal.report_html import render_market_report, open_in_browser
+        html_path = render_market_report(results, overall)
+        log(f"📄 大盘 HTML 报告已生成：{html_path}")
+        if open_report:
+            open_in_browser(html_path, log)
+
+        with _tasks_lock:
+            _tasks[task_id]["status"] = "done"
+            _tasks[task_id]["html_path"] = str(html_path)
+            _tasks[task_id]["report"] = json.dumps(
+                {"kind": "market", "indices": results, "overall_summary": overall,
+                 "html_path": str(html_path)},
+                ensure_ascii=False, default=_json_default)
+            _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
+        log("✅ 大盘复盘完成")
+
+    except Exception as e:
+        logger.exception("Market review task %s failed: %s", task_id, e)
+        logs.append(f"[{datetime.now(TZ_CN).strftime('%H:%M:%S')}] ❌ 大盘复盘失败：{e}")
         with _tasks_lock:
             _tasks[task_id]["status"] = "error"
             _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
@@ -837,16 +973,21 @@ def _make_llm_caller(log):
             model = f"openai/{hai_model}"
             log(f"🤖 LLM：Hai Proxy（{hai_model} @ {hai_base}）")
 
+            # GPT-5 系列不支持自定义 temperature（只接受默认值），且有 reasoning 开销
+            is_gpt5 = "gpt-5" in hai_model.lower()
+
             def call_hai(prompt: str) -> str:
-                resp = litellm.completion(
+                kwargs = dict(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     api_base=hai_base,
                     api_key=hai_key,
-                    temperature=0.3,
-                    max_tokens=1024,
-                    timeout=60,
+                    max_tokens=2048,   # litellm 自动转 max_completion_tokens
+                    timeout=90,
                 )
+                if not is_gpt5:
+                    kwargs["temperature"] = 0.3   # GPT-5 只允许默认 temperature，故省略
+                resp = litellm.completion(**kwargs)
                 return resp.choices[0].message.content or ""
 
             return call_hai

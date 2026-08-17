@@ -704,6 +704,8 @@ const DEFAULTS = {
   analysis_delay: 0,
   max_workers: 1,
   force_run: false,
+  llm_note_mode: 'batch',    // 逐指标LLM点评：batch(批量一次) | per_indicator(逐个详细)
+  auto_open_html: true,      // 分析后自动用浏览器打开 HTML 报告
   email: { enabled: true, subject_prefix: 'A股智能分析' },
 };
 
@@ -1056,6 +1058,24 @@ class SettingsTab {
               <option value="full">完整</option>
             </select>`, '影响邮件内容详细程度')}
 
+          ${this._row('逐指标 LLM 点评', `
+            <select id="cfg-llm-mode" class="form-select w-48">
+              <option value="batch">批量一次（快，推荐）</option>
+              <option value="per_indicator">逐指标详细（慢，更深入）</option>
+            </select>`, 'HTML报告对每个技术指标做偏多/偏空点评')}
+
+          ${this._row('分析后自动打开报告', `
+            <div class="flex items-center gap-3">
+              <button id="cfg-openhtml-btn" type="button"
+                class="relative flex-shrink-0 w-10 h-5 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 bg-blue-500"
+                role="switch" aria-checked="true">
+                <span id="cfg-openhtml-thumb"
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform translate-x-5"></span>
+              </button>
+              <input type="checkbox" id="cfg-openhtml" class="hidden" checked />
+              <span class="text-sm text-gray-700" id="cfg-openhtml-label">已启用</span>
+            </div>`, '生成 HTML 后用浏览器自动打开')}
+
           ${this._row('大盘复盘', `
             <div class="flex items-center gap-3">
               <button id="cfg-market-review-btn" type="button"
@@ -1179,7 +1199,15 @@ class SettingsTab {
     this._bindToggle('cfg-force-btn', 'cfg-force-thumb', 'cfg-force',
       (on) => { this._s.set('force_run', on); });
 
+    this._bindToggle('cfg-openhtml-btn', 'cfg-openhtml-thumb', 'cfg-openhtml',
+      (on) => {
+        const lbl = this._c.querySelector('#cfg-openhtml-label');
+        if (lbl) lbl.textContent = on ? '已启用' : '已关闭';
+        this._s.set('auto_open_html', on);
+      });
+
     this._bindInput('cfg-report-type',   'report_type');
+    this._bindInput('cfg-llm-mode',      'llm_note_mode');
     this._bindInput('cfg-market-region', 'market_review_region');
     this._bindInput('cfg-workers',       'max_workers',    v => Math.max(1, Math.min(5, +v || 1)));
     this._bindInput('cfg-delay',         'analysis_delay', v => Math.max(0, +v || 0));
@@ -1230,6 +1258,7 @@ class SettingsTab {
   _sync(state) {
     const sv = (id, val) => { const el = this._c.querySelector(`#${id}`); if (el) el.value = val ?? ''; };
     sv('cfg-report-type',   state.report_type);
+    sv('cfg-llm-mode',      state.llm_note_mode || 'batch');
     sv('cfg-market-region', state.market_review_region);
     sv('cfg-workers',       state.max_workers);
     sv('cfg-delay',         state.analysis_delay);
@@ -1239,6 +1268,9 @@ class SettingsTab {
       !!state.market_review_enabled,
       (on) => { const l = this._c.querySelector('#cfg-market-label'); if (l) l.textContent = on ? '已启用' : '已关闭'; });
     this._applyToggle('cfg-force-btn', 'cfg-force-thumb', 'cfg-force', !!state.force_run);
+    this._applyToggle('cfg-openhtml-btn', 'cfg-openhtml-thumb', 'cfg-openhtml',
+      state.auto_open_html !== false,
+      (on) => { const l = this._c.querySelector('#cfg-openhtml-label'); if (l) l.textContent = on ? '已启用' : '已关闭'; });
   }
 
   _applyToggle(btnId, thumbId, hiddenId, on, sideEffect) {
@@ -1466,10 +1498,11 @@ const DIM_DEFS = {
     mods: {
       ma_system: '均线系统 MA5/10/20/60', macd: 'MACD',
       rsi: 'RSI', kdj: 'KDJ', bollinger: '布林带',
+      overbought: '超买超卖综合', divergence: '背离(顶/底)',
       volume: '量价关系', pattern: 'K线形态(LLM)',
       wave: '波浪理论(LLM)', chan: '缠论(LLM)',
     },
-    defaults: ['ma_system','macd','rsi','kdj','bollinger','volume'],
+    defaults: ['ma_system','macd','rsi','kdj','bollinger','overbought','divergence','volume'],
   },
   fundamental: {
     label: '📈 基本面', color: 'emerald',
@@ -1505,7 +1538,8 @@ class RunTab {
     this._report         = null;
     this._selDims        = new Set(['technical','fundamental','industry']);
     this._selMods        = Object.fromEntries(
-      Object.entries(DIM_DEFS).map(([k,v]) => [k, new Set(v.defaults)])
+      // 默认全选：每个维度的全部子模块都勾选
+      Object.entries(DIM_DEFS).map(([k,v]) => [k, new Set(Object.keys(v.mods))])
     );
     this._serverStarting = false;
     this._activeSub      = 'analyze'; // 'analyze' | 'log' | 'report'
@@ -1873,7 +1907,7 @@ class RunTab {
 
     // 分析按钮
     this._c.querySelector('#btn-deep').addEventListener('click',   () => this._deepAnalyze());
-    this._c.querySelector('#btn-market').addEventListener('click', () => this._quickRun('market'));
+    this._c.querySelector('#btn-market').addEventListener('click', () => this._marketReview());
     this._c.querySelector('#btn-full').addEventListener('click',   () => this._quickRun('full'));
     this._c.querySelector('#btn-batch').addEventListener('click',  () => this._batchAnalyze());
     this._c.querySelector('#run-code').addEventListener('keydown', e => {
@@ -2182,7 +2216,9 @@ class RunTab {
       const res = await fetch(`${SERVER_RUN}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stock_code: code, stock_name: name || code, dimensions: dims, modules: modulesMap }),
+        body: JSON.stringify({ stock_code: code, stock_name: name || code, dimensions: dims, modules: modulesMap,
+          llm_mode: this._s.get().llm_note_mode || 'batch',
+          open_report: this._s.get().auto_open_html !== false }),
       });
       const d = await res.json();
       if (!d.ok) throw new Error(d.error);
@@ -2218,6 +2254,28 @@ class RunTab {
       this._resetBtns(); return;
     }
     this._listenSSE(taskId, 'markdown', '', label);
+  }
+
+  // ── 大盘复盘（新链路：上证+创业板，生成HTML）──────────────────────────
+  async _marketReview() {
+    const ok = await this._ensureServer();
+    if (!ok) return;
+    this._prepareLog('🌐 大盘复盘（上证指数 + 创业板指）');
+    let taskId;
+    try {
+      const res = await fetch(`${SERVER_RUN}/market_review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ open_report: this._s.get().auto_open_html !== false }),
+      });
+      const d = await res.json();
+      if (!d.ok) throw new Error(d.error);
+      taskId = d.task_id;
+    } catch (e) {
+      this._t.show(`启动失败: ${e.message}`, 'error');
+      this._resetBtns(); return;
+    }
+    this._listenSSE(taskId, 'market', '__market__', '大盘复盘');
   }
 
   // ── 日志区准备（切换到日志子面板）──────────────────────────────────
@@ -2282,9 +2340,15 @@ class RunTab {
       }
       if (d.report) {
         this._lastRtype = rtype;
-        rtype === 'structured'
-          ? this._showStructured(d.report, code, subject, taskId)
-          : this._showMarkdown(d.report, code, subject, taskId);
+        if (rtype === 'market') {
+          // 大盘：HTML 已在浏览器打开，portal 内不渲染，只提示 + 记历史
+          this._t.show('大盘复盘完成，HTML 已在浏览器打开', 'success', 5000);
+          this._saveHistory({ code: '__market__', name: '大盘复盘', score: null, signal: '', taskId }, null);
+        } else {
+          rtype === 'structured'
+            ? this._showStructured(d.report, code, subject, taskId)
+            : this._showMarkdown(d.report, code, subject, taskId);
+        }
       }
     } catch {}
   }
@@ -2375,7 +2439,14 @@ class RunTab {
   // ── 历史记录（localStorage，最多 10 条，显示最近 5 条）──────────────
   // 格式：[{code, name, score, signal, time, taskId}]
   _saveHistory({ code, name, score, signal, taskId } = {}, rpt = null) {
-    const list = this._loadHistoryList();
+    let list = this._loadHistoryList();
+    // 去重（需求1）：同 code 只保留最新——删旧项及其报告缓存
+    if (code) {
+      list.filter(h => h.code === code).forEach(h => {
+        if (h.taskId) { try { localStorage.removeItem(REPORT_CACHE_PREFIX + h.taskId); } catch {} }
+      });
+      list = list.filter(h => h.code !== code);
+    }
     list.unshift({
       code:   code   || '',
       name:   name   || code || '',
@@ -2460,15 +2531,25 @@ class RunTab {
 
     // 点击历史条目：优先读缓存，否则走网络
     list.querySelectorAll('[data-history-idx]').forEach(row => {
-      row.addEventListener('click', () => {
+      row.addEventListener('click', async () => {
         const idx  = parseInt(row.dataset.historyIdx, 10);
         const item = this._loadHistoryList()[idx];
-        if (!item?.taskId) return;
-        const cached = item.taskId && localStorage.getItem(REPORT_CACHE_PREFIX + item.taskId);
+        if (!item) return;
+        // 优先：在线时让 server 打开该 code 最新 HTML 报告（需求2）
+        if (item.code) {
+          try {
+            const r = await fetch(`${SERVER_RUN}/open_report?code=${encodeURIComponent(item.code)}`,
+                                  { signal: AbortSignal.timeout(3000) });
+            const d = await r.json();
+            if (d.ok) { this._t.show('已在浏览器打开报告', 'success'); return; }
+          } catch {}
+        }
+        // 回退：缓存结构化视图（离线兜底）
+        if (!item.taskId) { this._t.show('无缓存报告，请重新分析', 'warning'); return; }
+        const cached = localStorage.getItem(REPORT_CACHE_PREFIX + item.taskId);
         if (cached) {
           try {
             const rpt = JSON.parse(cached);
-            // 判断是结构化 JSON 还是 markdown 字符串
             if (typeof rpt === 'object' && rpt !== null) {
               this._lastRtype = 'structured';
               this._showStructuredFromCache(rpt, item.code, item.name);

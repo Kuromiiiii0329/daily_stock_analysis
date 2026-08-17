@@ -22,6 +22,8 @@ const DEFAULTS = {
   analysis_delay: 0,
   max_workers: 1,
   force_run: false,
+  llm_note_mode: 'batch',    // 逐指标LLM点评：batch(批量一次) | per_indicator(逐个详细)
+  auto_open_html: true,      // 分析后自动用浏览器打开 HTML 报告
   email: { enabled: true, subject_prefix: 'A股智能分析' },
 };
 

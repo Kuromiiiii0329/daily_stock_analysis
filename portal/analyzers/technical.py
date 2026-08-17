@@ -32,6 +32,8 @@ class TechnicalAnalyzer(BaseAnalyzer):
         "rsi":        "RSI 超买超卖",
         "kdj":        "KDJ 随机指标",
         "bollinger":  "布林带",
+        "overbought": "超买超卖综合（RSI+KDJ+WR+布林）",
+        "divergence": "背离检测（顶背离/底背离）",
         "volume":     "量价关系",
         "pattern":    "K线形态（LLM）",
         "wave":       "波浪理论（LLM）",
@@ -40,7 +42,8 @@ class TechnicalAnalyzer(BaseAnalyzer):
         "turnover":   "换手率趋势（近30日）",
         "margin":     "融资融券余额趋势",
     }
-    DEFAULT_MODULES = ["ma_system", "macd", "rsi", "kdj", "bollinger", "volume"]
+    DEFAULT_MODULES = ["ma_system", "macd", "rsi", "kdj", "bollinger",
+                       "overbought", "divergence", "volume"]
 
     def analyze(self, stock_code, stock_name, df, modules, llm_call, search):
         result = DimensionResult(dimension=self.dimension, name=self.name)
@@ -66,6 +69,10 @@ class TechnicalAnalyzer(BaseAnalyzer):
                 sections.append(self._analyze_kdj(df))
             if "bollinger" in modules:
                 sections.append(self._analyze_bollinger(df))
+            if "overbought" in modules:
+                sections.append(self._analyze_overbought(df))
+            if "divergence" in modules:
+                sections.append(self._analyze_divergence(df))
             if "volume" in modules:
                 sections.append(self._analyze_volume(df))
             if "pattern" in modules and llm_call:
@@ -137,6 +144,12 @@ class TechnicalAnalyzer(BaseAnalyzer):
         df["boll_upper"] = mid + 2 * std
         df["boll_lower"] = mid - 2 * std
         df["boll_width"] = (df["boll_upper"] - df["boll_lower"]) / mid * 100
+
+        # 威廉指标 WR(14)：(最高-收盘)/(最高-最低)*(-100)，[-100,0]，
+        # <-80 超卖、>-20 超买（注意方向与 RSI 相反）
+        hh14 = df["high"].rolling(14).max()
+        ll14 = df["low"].rolling(14).min()
+        df["wr14"] = (hh14 - close) / (hh14 - ll14 + 1e-9) * -100
 
         # 成交量均线
         if not volume.empty:
@@ -601,6 +614,393 @@ class TechnicalAnalyzer(BaseAnalyzer):
             return Section(key="margin", title="融资融券",
                            content=f"融资券数据获取失败（可能不在两融标的）：{e}",
                            score=50, signal="hold")
+
+    # ── 超买超卖综合 + 背离检测（新增）──────────────────────
+    def _analyze_overbought(self, df) -> Section:
+        """综合 RSI/KDJ/威廉WR/布林位置，给出统一的超买超卖结论。"""
+        last = df.iloc[-1]
+        r6  = float(last.get("rsi6", 50) or 50)
+        j   = float(last.get("kdj_j", 50) or 50)
+        wr  = float(last.get("wr14", -50) or -50)
+        upper = last.get("boll_upper"); lower = last.get("boll_lower"); close = last["close"]
+        boll_pos = None
+        if upper is not None and not pd.isna(upper):
+            boll_pos = (close - lower) / (upper - lower + 1e-9) * 100
+
+        # 各指标投票：+1 超买、-1 超卖、0 中性
+        ob_votes, os_votes, lines = 0, 0, []
+        # RSI(6)：>70 超买 <30 超卖
+        if r6 > 70:   ob_votes += 1; lines.append(f"RSI(6)={r6:.0f} 超买")
+        elif r6 < 30: os_votes += 1; lines.append(f"RSI(6)={r6:.0f} 超卖")
+        else:         lines.append(f"RSI(6)={r6:.0f} 中性")
+        # KDJ J：>90 超买 <10 超卖
+        if j > 90:    ob_votes += 1; lines.append(f"KDJ_J={j:.0f} 超买")
+        elif j < 10:  os_votes += 1; lines.append(f"KDJ_J={j:.0f} 超卖")
+        else:         lines.append(f"KDJ_J={j:.0f} 中性")
+        # 威廉 WR(14)：>-20 超买 <-80 超卖
+        if wr > -20:  ob_votes += 1; lines.append(f"WR(14)={wr:.0f} 超买")
+        elif wr < -80: os_votes += 1; lines.append(f"WR(14)={wr:.0f} 超卖")
+        else:         lines.append(f"WR(14)={wr:.0f} 中性")
+        # 布林位置：>90% 超买 <10% 超卖
+        if boll_pos is not None:
+            if boll_pos > 90:   ob_votes += 1; lines.append(f"布林位置={boll_pos:.0f}% 触上轨")
+            elif boll_pos < 10: os_votes += 1; lines.append(f"布林位置={boll_pos:.0f}% 触下轨")
+            else:               lines.append(f"布林位置={boll_pos:.0f}% 中部")
+
+        total = ob_votes + os_votes
+        if ob_votes >= 3:
+            status, score = f"🔴 强烈超买（{ob_votes}/4 指标），短期回调风险高", 25
+        elif os_votes >= 3:
+            status, score = f"🟢 强烈超卖（{os_votes}/4 指标），反弹概率大", 75
+        elif ob_votes == 2:
+            status, score = f"🟠 偏超买（{ob_votes}/4），注意风险", 38
+        elif os_votes == 2:
+            status, score = f"🔵 偏超卖（{os_votes}/4），可关注", 62
+        else:
+            status, score = "⚪ 中性区域，无明显超买超卖", 50
+
+        content = "**" + status + "**\n" + "\n".join(f"- {x}" for x in lines) + \
+                  "\n- 判据：多指标共振时信号更可靠（≥3 项同向为强信号）\n"
+        return Section(key="overbought", title="超买超卖综合", content=content,
+                       data={"rsi6": r6, "kdj_j": j, "wr14": wr, "boll_pos": boll_pos,
+                             "ob_votes": ob_votes, "os_votes": os_votes},
+                       score=score, signal=self._score_to_signal(score))
+
+    def _analyze_divergence(self, df) -> Section:
+        """
+        多状态背离检测引擎（专业量化实现）。
+
+        特性（区别于简单的两点对比）：
+        - 摆动点：分形(Fractal, 右侧k根确认防未来函数) + ATR幅度清洗
+        - 类型：常规背离(反转) + 隐藏背离(延续)，MACD-DIF 与 RSI12 双指标
+        - 成熟度状态机：无迹象 → 迹象浮现(EARLY) → 进行中(FORMING) → 已确认(CONFIRMED) → 失效
+          用"已确认摆动点 + 实时临时锚点"做进行时预测，不必等背离完全形成
+        - 强度评分：价格位移/指标反向差/极值区/量能/时间跨度 多因子加权 × 成熟度系数
+        """
+        import numpy as np
+        n = len(df)
+        if n < 30:
+            return Section(key="divergence", title="背离检测",
+                           content="数据不足（少于30日），无法可靠检测背离", score=50, signal="hold")
+
+        close = df["close"].values.astype(float)
+        high  = df["high"].values.astype(float)
+        low   = df["low"].values.astype(float)
+        dif   = df["dif"].values.astype(float)   if "dif"   in df.columns else None
+        rsi   = df["rsi12"].values.astype(float) if "rsi12" in df.columns else None
+        macd_bar = df["macd_bar"].values.astype(float) if "macd_bar" in df.columns else None
+        vr    = df["vol_ratio"].values.astype(float) if "vol_ratio" in df.columns else None
+        ma20  = df["close"].rolling(20).mean().values
+
+        # ATR14（波动率归一化基准）
+        atr = self._atr(high, low, close, 14)
+        now = n - 1
+        K = 3               # 分形半宽（右侧确认根数）
+        MIN_GAP, MAX_GAP = 5, 55
+        RECENT_WIN = 90     # 只看近90交易日内形成的背离（更早的时效性差，且避免长历史刷屏）
+
+        # 摆动点（价格高/低点，已右侧确认）+ ATR 幅度清洗
+        pl = self._fractal_idx(low,  K, kind="low")
+        ph = self._fractal_idx(high, K, kind="high")
+        pl = self._clean_pivots(pl, low,  atr, MIN_GAP)
+        ph = self._clean_pivots(ph, high, atr, MIN_GAP)
+
+        signals = []
+
+        # ── 已确认背离（遍历相邻同类摆动点，MACD + RSI 双指标）──
+        for ind, ind_name, k_ind in [(dif, "MACD", "dif"), (rsi, "RSI", "rsi")]:
+            if ind is None:
+                continue
+            # 底背离 / 隐藏底背离
+            for a, b in zip(pl, pl[1:]):
+                if b < now - RECENT_WIN:          # 第二个摆动点须在近期窗口内
+                    continue
+                if not (MIN_GAP <= b - a <= MAX_GAP):
+                    continue
+                sig = self._classify_pair(
+                    kind="bottom", i1=a, i2=b, price=low, ind=ind, ind_name=ind_name,
+                    atr=atr, rsi=rsi, ma20=ma20, vr=vr, close=close)
+                if sig:
+                    signals.append(sig)
+            # 顶背离 / 隐藏顶背离
+            for a, b in zip(ph, ph[1:]):
+                if b < now - RECENT_WIN:
+                    continue
+                if not (MIN_GAP <= b - a <= MAX_GAP):
+                    continue
+                sig = self._classify_pair(
+                    kind="top", i1=a, i2=b, price=high, ind=ind, ind_name=ind_name,
+                    atr=atr, rsi=rsi, ma20=ma20, vr=vr, close=close)
+                if sig:
+                    signals.append(sig)
+
+        # ── 进行时 / 早期背离（临时锚点 + 状态机，MACD 主判）──
+        emerging = self._emerging(
+            close, low, high, dif, rsi, macd_bar, atr, ma20, pl, ph, now)
+        signals.extend(emerging)
+
+        # 去重：同类型同区间保留强度最高
+        signals = self._dedup(signals)
+
+        return self._build_divergence_section(signals)
+
+    # ── 背离引擎辅助方法 ──────────────────────────────────────
+    @staticmethod
+    def _atr(high, low, close, n=14):
+        import numpy as np
+        tr = np.zeros(len(close))
+        tr[0] = high[0] - low[0]
+        for i in range(1, len(close)):
+            tr[i] = max(high[i] - low[i],
+                        abs(high[i] - close[i-1]),
+                        abs(low[i]  - close[i-1]))
+        atr = np.full(len(close), np.nan)
+        if len(close) >= n:
+            atr[n-1] = tr[:n].mean()
+            for i in range(n, len(close)):
+                atr[i] = (atr[i-1] * (n-1) + tr[i]) / n
+        # 前段用累计均值兜底，避免 NaN
+        for i in range(len(close)):
+            if np.isnan(atr[i]):
+                atr[i] = tr[:i+1].mean() if i > 0 else tr[0]
+        return atr
+
+    @staticmethod
+    def _fractal_idx(arr, k, kind="low"):
+        """分形摆动点：严格不等号 + 右侧 k 根确认（防未来函数）。返回升序下标。"""
+        out = []
+        m = len(arr)
+        for i in range(k, m - k):
+            left  = arr[i-k:i]
+            right = arr[i+1:i+k+1]
+            if kind == "low"  and arr[i] < left.min() and arr[i] < right.min():
+                out.append(i)
+            elif kind == "high" and arr[i] > left.max() and arr[i] > right.max():
+                out.append(i)
+        return out
+
+    @staticmethod
+    def _clean_pivots(pivots, prices, atr, min_gap, atr_mult=1.2):
+        """清洗摆动点：间隔<min_gap 合并保留更极端者；幅度<atr_mult*ATR 视为同一波剔除。"""
+        kept = []
+        for idx in pivots:
+            if not kept:
+                kept.append(idx); continue
+            prev = kept[-1]
+            if idx - prev < min_gap:
+                if abs(prices[idx]) and abs(prices[idx] - prices[prev]) > 0:
+                    # 保留更极端的（低点取更低、高点由调用侧保证方向一致，这里按价差方向）
+                    kept[-1] = idx if abs(prices[idx]) else prev
+                continue
+            if abs(prices[idx] - prices[prev]) < atr_mult * (atr[idx] or 1e-9):
+                continue
+            kept.append(idx)
+        return kept
+
+    def _classify_pair(self, kind, i1, i2, price, ind, ind_name, atr, rsi, ma20, vr, close):
+        """判定一对摆动点是否构成背离，返回信号 dict 或 None。"""
+        p1, p2 = price[i1], price[i2]
+        v1, v2 = ind[i1], ind[i2]
+
+        dtype = None       # regular_bull/bear, hidden_bull/bear
+        if kind == "bottom":
+            if p2 < p1 and v2 > v1:
+                dtype = "regular_bull"       # 价格新低+指标抬高 → 常规底背离(反转看涨)
+            elif p2 > p1 and v2 < v1:
+                dtype = "hidden_bull"        # 价格抬高+指标新低 → 隐藏底背离(延续看涨)
+        else:  # top
+            if p2 > p1 and v2 < v1:
+                dtype = "regular_bear"       # 价格新高+指标走弱 → 常规顶背离(反转看跌)
+            elif p2 < p1 and v2 > v1:
+                dtype = "hidden_bear"        # 价格走低+指标抬高 → 隐藏顶背离(延续看跌)
+        if dtype is None:
+            return None
+
+        # 过滤：常规背离要区域过滤（RSI），隐藏背离要趋势过滤
+        if dtype.startswith("regular") and ind_name == "RSI" and rsi is not None:
+            if kind == "bottom" and not (rsi[i1] < 35 or rsi[i2] < 35):
+                return None
+            if kind == "top" and not (rsi[i1] > 65 or rsi[i2] > 65):
+                return None
+        if dtype.startswith("hidden") and ma20 is not None and not pd.isna(ma20[i2]):
+            if "bull" in dtype and not (close[i2] > ma20[i2]):
+                return None
+            if "bear" in dtype and not (close[i2] < ma20[i2]):
+                return None
+
+        # 成熟度：i2 已是确认摆动点（能进这函数就已右侧确认）→ CONFIRMED
+        state = "CONFIRMED"
+        score = self._strength(dtype, kind, i1, i2, price, ind, ind_name, atr, rsi, vr)
+        score = int(round(score * 1.0))     # confirm_mult=1.0
+        return {"type": dtype, "indicator": ind_name, "maturity": state,
+                "score": score, "i1": i1, "i2": i2}
+
+    def _strength(self, dtype, kind, i1, i2, price, ind, ind_name, atr, rsi, vr):
+        """八因子加权强度评分 0-100（简化版，保留核心因子）。"""
+        a = atr[i2] or 1e-9
+        # 价格位移
+        price_f = min(abs(price[i2] - price[i1]) / a / 2.5, 1.0)
+        # 指标反向差
+        ind_diff = (ind[i2] - ind[i1]) if "bull" in dtype else (ind[i1] - ind[i2])
+        k_ind = 15.0 if ind_name == "RSI" else max(a, abs(ind[i2]) + 1e-9)
+        ind_f = min(max(ind_diff, 0) / k_ind, 1.0)
+        align_f = min(price_f, ind_f)
+        # 时间跨度梯形
+        dt = i2 - i1
+        if dt < 5 or dt > 80: time_f = 0.0
+        elif 8 <= dt <= 40:   time_f = 1.0
+        elif dt < 8:          time_f = (dt - 5) / 3.0
+        else:                 time_f = (80 - dt) / 40.0
+        # 极值区（仅常规背离，用 RSI）
+        zone_f = 0.0
+        if dtype.startswith("regular") and rsi is not None:
+            zone_f = min(max((rsi[i2]-70)/20, 0), 1) if kind == "top" else min(max((30-rsi[i2])/20, 0), 1)
+        # 量能（P2 缩量为正）
+        vol_f = 0.0
+        if vr is not None and vr[i1] > 0:
+            vol_f = min(max((vr[i1] - vr[i2]) / vr[i1], 0), 1)
+        raw = 100 * (0.22*zone_f + 0.20*ind_f + 0.18*align_f +
+                     0.15*price_f + 0.13*time_f + 0.12*vol_f)
+        if raw < 5:
+            raw = 30 + 20 * align_f     # 无极值区/量能时给个保底（隐藏背离常见）
+        return max(min(raw, 100), 0)
+
+    def _emerging(self, close, low, high, dif, rsi, macd_bar, atr, ma20, pl, ph, now):
+        """临时锚点 + 状态机：检测 EARLY(迹象浮现) / FORMING(进行中) 背离。"""
+        import numpy as np
+        out = []
+        if dif is None:
+            return out
+        recent_cut = now - 55
+
+        for kind in ("bottom", "top"):
+            pivots = pl if kind == "bottom" else ph
+            confirmed = [i for i in pivots if i <= now - 3 and i >= recent_cut]
+            if not confirmed:
+                continue
+            p1_idx = confirmed[-1]           # 最近一个已确认摆动点
+            seg = slice(p1_idx + 1, now + 1)
+            if p1_idx + 1 > now:
+                continue
+
+            if kind == "bottom":
+                live_idx = p1_idx + 1 + int(np.argmin(low[seg]))
+                P1, P2 = low[p1_idx], low[live_idx]
+            else:
+                live_idx = p1_idx + 1 + int(np.argmax(high[seg]))
+                P1, P2 = high[p1_idx], high[live_idx]
+            I1, I2 = dif[p1_idx], dif[live_idx]
+            bb = max(live_idx - p1_idx, 1)
+            a = atr[now] or 1e-9
+
+            # 价格-指标滚动相关（脱钩预警）
+            W = 14
+            rho = np.nan
+            if now >= W:
+                ret = np.diff(close[now-W:now+1]) / (close[now-W:now] + 1e-9)
+                dind = np.diff(dif[now-W:now+1])
+                if ret.std() > 0 and dind.std() > 0:
+                    rho = float(np.corrcoef(ret, dind)[0, 1])
+
+            state = None
+            reason = ""
+            if kind == "bottom":
+                # FORMING：价格已破前低 + DIF 抬高
+                if P2 < P1 and I2 > I1:
+                    state, reason = "FORMING", "价格已创新低但 MACD 抬高，底背离进行中"
+                else:
+                    near = (P1 <= P2 <= P1 * 1.015) or (P2 - P1 <= 0.5 * a)
+                    rsi_strong = rsi is not None and (rsi[live_idx] - rsi[p1_idx] >= 3)
+                    if near and (I2 > I1 or rsi_strong):
+                        state, reason = "EARLY", "价格逼近前低但指标已转强，底背离迹象浮现"
+                    elif not np.isnan(rho) and rho < -0.3 and close[now] < ma20[now]:
+                        state, reason = "EARLY", "价格与 MACD 走势脱钩（负相关），潜在底背离酝酿"
+            else:  # top
+                if P2 > P1 and I2 < I1:
+                    state, reason = "FORMING", "价格已创新高但 MACD 走弱，顶背离进行中"
+                else:
+                    near = (P1 * 0.985 <= P2 <= P1) or (P1 - P2 <= 0.5 * a)
+                    # 动能衰减：macd_bar 连续收缩
+                    decay = False
+                    if macd_bar is not None and now >= 3:
+                        h = macd_bar[now-2:now+1]
+                        decay = h[0] > h[1] > h[2] and h[0] > 0
+                    if near and (I2 < I1 or decay):
+                        state, reason = "EARLY", "价格逼近前高但动能衰减，顶背离迹象浮现"
+                    elif decay and close[now] > ma20[now]:
+                        state, reason = "EARLY", "MACD 柱连续收缩、量价动能脱钩，顶背离预警"
+
+            if state:
+                dtype = ("regular_bull" if kind == "bottom" else "regular_bear")
+                base = self._strength(dtype, kind, p1_idx, live_idx, low if kind=="bottom" else high,
+                                      dif, "MACD", atr, rsi, None)
+                mult = 0.6 if state == "EARLY" else 0.85
+                score = int(round(base * mult))
+                # 早期信号给分不低于状态下限，便于展示
+                score = max(score, 30 if state == "EARLY" else 42)
+                out.append({"type": dtype + "_emerging", "indicator": "MACD",
+                            "maturity": state, "score": score,
+                            "i1": p1_idx, "i2": live_idx, "reason": reason})
+        return out
+
+    @staticmethod
+    def _dedup(signals):
+        """
+        同「基础类型 + 指标 + 是否早期」只保留强度最高的 1 条，避免长历史多对摆动点刷屏。
+        例：多个 RSI 常规顶背离只留最强那条。
+        """
+        best = {}
+        for s in signals:
+            base_type = s["type"].replace("_emerging", "")
+            is_emerging = "_emerging" in s["type"]
+            key = (base_type, s.get("indicator", ""), is_emerging)
+            if key not in best or s["score"] > best[key]["score"]:
+                best[key] = s
+        return sorted(best.values(), key=lambda x: -x["score"])
+
+    def _build_divergence_section(self, signals) -> Section:
+        """把背离信号列表渲染成 Section。"""
+        TYPE_LABEL = {
+            "regular_bull": ("🟢 常规底背离", "反转看涨", "buy"),
+            "regular_bear": ("🔴 常规顶背离", "反转看跌", "sell"),
+            "hidden_bull":  ("🟢 隐藏底背离", "延续看涨", "buy"),
+            "hidden_bear":  ("🔴 隐藏顶背离", "延续看跌", "sell"),
+        }
+        MAT_LABEL = {"EARLY": "迹象浮现", "FORMING": "进行中", "CONFIRMED": "已确认"}
+
+        if not signals:
+            return Section(key="divergence", title="背离检测",
+                           content="近期未检测到顶/底背离信号（含早期/进行中）。\n"
+                                   "- 检测方法：分形摆动点 + MACD(DIF)/RSI 双指标 + 成熟度状态机\n",
+                           data={"signals": []}, score=50, signal="hold")
+
+        lines = []
+        best = signals[0]
+        for s in signals[:5]:
+            base_type = s["type"].replace("_emerging", "")
+            label, meaning, _ = TYPE_LABEL.get(base_type, ("背离", "", "hold"))
+            mat = MAT_LABEL.get(s["maturity"], s["maturity"])
+            reason = s.get("reason", "")
+            grade = "强" if s["score"] >= 70 else ("中" if s["score"] >= 45 else "弱")
+            lines.append(
+                f"**{label}·{mat}**（{s['indicator']}，{meaning}，强度{s['score']}/{grade}）"
+                + (f"\n  {reason}" if reason else ""))
+
+        # 综合评分：最强信号方向决定，成熟度低的往中性收敛
+        base_type = best["type"].replace("_emerging", "")
+        _, _, direction = TYPE_LABEL.get(base_type, ("", "", "hold"))
+        if "bull" in base_type:
+            score = 50 + int((best["score"] / 100) * 30)   # 50~80
+        else:
+            score = 50 - int((best["score"] / 100) * 30)   # 20~50
+
+        note = ("\n- 成熟度：迹象浮现(预警) → 进行中(未确认) → 已确认(可参考)\n"
+                "- 常规背离=反转信号；隐藏背离=趋势延续信号\n"
+                "- 背离是预警而非充分条件，需结合均线/成交量确认，早期信号尤其谨慎\n")
+        content = "\n".join(lines) + "\n" + note
+        return Section(key="divergence", title="背离检测", content=content,
+                       data={"signals": signals[:5], "best": best},
+                       score=score, signal=self._score_to_signal(score))
 
     @staticmethod
     def _score_to_signal(score: int) -> str:

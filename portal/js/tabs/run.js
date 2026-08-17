@@ -25,10 +25,11 @@ const DIM_DEFS = {
     mods: {
       ma_system: '均线系统 MA5/10/20/60', macd: 'MACD',
       rsi: 'RSI', kdj: 'KDJ', bollinger: '布林带',
+      overbought: '超买超卖综合', divergence: '背离(顶/底)',
       volume: '量价关系', pattern: 'K线形态(LLM)',
       wave: '波浪理论(LLM)', chan: '缠论(LLM)',
     },
-    defaults: ['ma_system','macd','rsi','kdj','bollinger','volume'],
+    defaults: ['ma_system','macd','rsi','kdj','bollinger','overbought','divergence','volume'],
   },
   fundamental: {
     label: '📈 基本面', color: 'emerald',
@@ -64,7 +65,8 @@ export class RunTab {
     this._report         = null;
     this._selDims        = new Set(['technical','fundamental','industry']);
     this._selMods        = Object.fromEntries(
-      Object.entries(DIM_DEFS).map(([k,v]) => [k, new Set(v.defaults)])
+      // 默认全选：每个维度的全部子模块都勾选
+      Object.entries(DIM_DEFS).map(([k,v]) => [k, new Set(Object.keys(v.mods))])
     );
     this._serverStarting = false;
     this._activeSub      = 'analyze'; // 'analyze' | 'log' | 'report'
@@ -432,7 +434,7 @@ export class RunTab {
 
     // 分析按钮
     this._c.querySelector('#btn-deep').addEventListener('click',   () => this._deepAnalyze());
-    this._c.querySelector('#btn-market').addEventListener('click', () => this._quickRun('market'));
+    this._c.querySelector('#btn-market').addEventListener('click', () => this._marketReview());
     this._c.querySelector('#btn-full').addEventListener('click',   () => this._quickRun('full'));
     this._c.querySelector('#btn-batch').addEventListener('click',  () => this._batchAnalyze());
     this._c.querySelector('#run-code').addEventListener('keydown', e => {
@@ -741,7 +743,9 @@ export class RunTab {
       const res = await fetch(`${SERVER}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stock_code: code, stock_name: name || code, dimensions: dims, modules: modulesMap }),
+        body: JSON.stringify({ stock_code: code, stock_name: name || code, dimensions: dims, modules: modulesMap,
+          llm_mode: this._s.get().llm_note_mode || 'batch',
+          open_report: this._s.get().auto_open_html !== false }),
       });
       const d = await res.json();
       if (!d.ok) throw new Error(d.error);
@@ -777,6 +781,28 @@ export class RunTab {
       this._resetBtns(); return;
     }
     this._listenSSE(taskId, 'markdown', '', label);
+  }
+
+  // ── 大盘复盘（新链路：上证+创业板，生成HTML）──────────────────────────
+  async _marketReview() {
+    const ok = await this._ensureServer();
+    if (!ok) return;
+    this._prepareLog('🌐 大盘复盘（上证指数 + 创业板指）');
+    let taskId;
+    try {
+      const res = await fetch(`${SERVER}/market_review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ open_report: this._s.get().auto_open_html !== false }),
+      });
+      const d = await res.json();
+      if (!d.ok) throw new Error(d.error);
+      taskId = d.task_id;
+    } catch (e) {
+      this._t.show(`启动失败: ${e.message}`, 'error');
+      this._resetBtns(); return;
+    }
+    this._listenSSE(taskId, 'market', '__market__', '大盘复盘');
   }
 
   // ── 日志区准备（切换到日志子面板）──────────────────────────────────
@@ -841,9 +867,15 @@ export class RunTab {
       }
       if (d.report) {
         this._lastRtype = rtype;
-        rtype === 'structured'
-          ? this._showStructured(d.report, code, subject, taskId)
-          : this._showMarkdown(d.report, code, subject, taskId);
+        if (rtype === 'market') {
+          // 大盘：HTML 已在浏览器打开，portal 内不渲染，只提示 + 记历史
+          this._t.show('大盘复盘完成，HTML 已在浏览器打开', 'success', 5000);
+          this._saveHistory({ code: '__market__', name: '大盘复盘', score: null, signal: '', taskId }, null);
+        } else {
+          rtype === 'structured'
+            ? this._showStructured(d.report, code, subject, taskId)
+            : this._showMarkdown(d.report, code, subject, taskId);
+        }
       }
     } catch {}
   }
@@ -934,7 +966,14 @@ export class RunTab {
   // ── 历史记录（localStorage，最多 10 条，显示最近 5 条）──────────────
   // 格式：[{code, name, score, signal, time, taskId}]
   _saveHistory({ code, name, score, signal, taskId } = {}, rpt = null) {
-    const list = this._loadHistoryList();
+    let list = this._loadHistoryList();
+    // 去重（需求1）：同 code 只保留最新——删旧项及其报告缓存
+    if (code) {
+      list.filter(h => h.code === code).forEach(h => {
+        if (h.taskId) { try { localStorage.removeItem(REPORT_CACHE_PREFIX + h.taskId); } catch {} }
+      });
+      list = list.filter(h => h.code !== code);
+    }
     list.unshift({
       code:   code   || '',
       name:   name   || code || '',
@@ -1019,15 +1058,25 @@ export class RunTab {
 
     // 点击历史条目：优先读缓存，否则走网络
     list.querySelectorAll('[data-history-idx]').forEach(row => {
-      row.addEventListener('click', () => {
+      row.addEventListener('click', async () => {
         const idx  = parseInt(row.dataset.historyIdx, 10);
         const item = this._loadHistoryList()[idx];
-        if (!item?.taskId) return;
-        const cached = item.taskId && localStorage.getItem(REPORT_CACHE_PREFIX + item.taskId);
+        if (!item) return;
+        // 优先：在线时让 server 打开该 code 最新 HTML 报告（需求2）
+        if (item.code) {
+          try {
+            const r = await fetch(`${SERVER}/open_report?code=${encodeURIComponent(item.code)}`,
+                                  { signal: AbortSignal.timeout(3000) });
+            const d = await r.json();
+            if (d.ok) { this._t.show('已在浏览器打开报告', 'success'); return; }
+          } catch {}
+        }
+        // 回退：缓存结构化视图（离线兜底）
+        if (!item.taskId) { this._t.show('无缓存报告，请重新分析', 'warning'); return; }
+        const cached = localStorage.getItem(REPORT_CACHE_PREFIX + item.taskId);
         if (cached) {
           try {
             const rpt = JSON.parse(cached);
-            // 判断是结构化 JSON 还是 markdown 字符串
             if (typeof rpt === 'object' && rpt !== null) {
               this._lastRtype = 'structured';
               this._showStructuredFromCache(rpt, item.code, item.name);
