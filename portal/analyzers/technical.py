@@ -27,23 +27,24 @@ class TechnicalAnalyzer(BaseAnalyzer):
     description = "均线/MACD/RSI/KDJ/布林带/量价/形态/波浪/缠论"
 
     MODULES = {
-        "ma_system":  "均线系统（MA5/10/20/60）",
-        "macd":       "MACD 指标",
-        "rsi":        "RSI 超买超卖",
-        "kdj":        "KDJ 随机指标",
-        "bollinger":  "布林带",
-        "overbought": "超买超卖综合（RSI+KDJ+WR+布林）",
-        "divergence": "背离检测（顶背离/底背离）",
-        "volume":     "量价关系",
-        "pattern":    "K线形态（LLM）",
-        "wave":       "波浪理论（LLM）",
-        "chan":        "缠论（LLM）",
-        "chip":       "筹码分布（成本集中度）",
-        "turnover":   "换手率趋势（近30日）",
-        "margin":     "融资融券余额趋势",
+        "ma_system":   "均线系统（MA5/10/20/60）",
+        "macd":        "MACD 指标",
+        "rsi":         "RSI 超买超卖",
+        "kdj":         "KDJ 随机指标",
+        "bollinger":   "布林带",
+        "overbought":  "超买超卖综合（RSI+KDJ+WR+布林）",
+        "divergence":  "背离检测（顶背离/底背离）",
+        "volume":      "量价关系",
+        "llm_tech":    "技术指标综合精讲（LLM，基于所有量化指标）",
+        "pattern":     "K线形态（LLM）",
+        "wave":        "波浪理论（LLM）",
+        "chan":         "缠论（LLM）",
+        "chip":        "筹码分布（成本集中度）",
+        "turnover":    "换手率趋势（近30日）",
+        "margin":      "融资融券余额趋势",
     }
     DEFAULT_MODULES = ["ma_system", "macd", "rsi", "kdj", "bollinger",
-                       "overbought", "divergence", "volume"]
+                       "overbought", "divergence", "volume", "llm_tech"]
 
     def analyze(self, stock_code, stock_name, df, modules, llm_call, search):
         result = DimensionResult(dimension=self.dimension, name=self.name)
@@ -56,6 +57,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
 
         try:
             df = df.copy().sort_values("date").reset_index(drop=True)
+            self._df = df          # 保留引用，供背离渲染时取日期
             df = self._compute_indicators(df)
             sections = []
 
@@ -87,6 +89,8 @@ class TechnicalAnalyzer(BaseAnalyzer):
                 sections.append(self._analyze_turnover(df))
             if "margin" in modules:
                 sections.append(self._analyze_margin(df, stock_code))
+            if "llm_tech" in modules and llm_call:
+                sections.append(self._analyze_llm_tech(df, stock_name, llm_call, sections))
 
             result.sections = sections
 
@@ -111,7 +115,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
         volume = df.get("volume", pd.Series(dtype=float))
 
         # MA
-        for n in [5, 10, 20, 60]:
+        for n in [5, 10, 20, 60, 120, 250]:
             df[f"ma{n}"] = close.rolling(n).mean()
 
         # MACD (12/26/9)
@@ -162,14 +166,26 @@ class TechnicalAnalyzer(BaseAnalyzer):
     def _analyze_ma(self, df, stock_code) -> Section:
         last = df.iloc[-1]
         close = last["close"]
-        ma5, ma10, ma20, ma60 = last.get("ma5"), last.get("ma10"), last.get("ma20"), last.get("ma60")
+        ma5   = last.get("ma5")
+        ma10  = last.get("ma10")
+        ma20  = last.get("ma20")
+        ma60  = last.get("ma60")
+        ma120 = last.get("ma120")
+        ma250 = last.get("ma250")
+
+        def _v(x): return x if (x is not None and not pd.isna(x)) else None
+
+        ma5, ma10, ma20, ma60, ma120, ma250 = (
+            _v(ma5), _v(ma10), _v(ma20), _v(ma60), _v(ma120), _v(ma250)
+        )
 
         bias5  = (close - ma5)  / ma5  * 100 if ma5  else 0
         bias20 = (close - ma20) / ma20 * 100 if ma20 else 0
 
+        # 均线多空排列（短中期）
         alignment = ""
         score = 50
-        if all(v is not None and not pd.isna(v) for v in [ma5, ma10, ma20]):
+        if all(v is not None for v in [ma5, ma10, ma20]):
             if ma5 > ma10 > ma20:
                 alignment = "多头排列（MA5>MA10>MA20）"
                 score = 75
@@ -180,24 +196,55 @@ class TechnicalAnalyzer(BaseAnalyzer):
                 alignment = "均线缠绕（震荡）"
                 score = 50
 
+        # 价格与年线/120日线的位置加分/减分
+        above_ma250 = ma250 and close > ma250
+        above_ma120 = ma120 and close > ma120
+        if above_ma250:
+            score = min(score + 8, 90)
+        elif ma250 and close < ma250:
+            score = max(score - 8, 15)
+
         if abs(bias5) > 8:
             score = max(score - 10, 20)
             bias_warn = f"  ⚠️ 乖离率偏大（{bias5:+.1f}%），追高风险高\n"
         else:
             bias_warn = ""
 
+        # 关键均线支撑/压力描述
+        pos_lines = []
+        if ma60:
+            rel60 = "上方（支撑）" if close > ma60 else "下方（压力）"
+            pos_lines.append(f"MA60={ma60:.2f}（60日线，{rel60}）")
+        if ma120:
+            rel120 = "上方（支撑）" if close > ma120 else "下方（压力）"
+            pos_lines.append(f"MA120={ma120:.2f}（半年线，{rel120}）")
+        if ma250:
+            rel250 = "上方（牛市格局）" if close > ma250 else "下方（年线压制，偏弱）"
+            pos_lines.append(f"MA250={ma250:.2f}（年线，{rel250}）")
+
+        # 组装内容
+        ma_line = (
+            f"- MA5={ma5:.2f}  MA10={ma10:.2f}  MA20={ma20:.2f}"
+            if ma5 and ma10 and ma20 else "- 均线数据不足"
+        )
+        if ma60:  ma_line += f"  MA60={ma60:.2f}"
+        if ma120: ma_line += f"  MA120={ma120:.2f}"
+        if ma250: ma_line += f"  MA250={ma250:.2f}"
+
         content = (
             f"**{alignment}**\n"
             f"- 当前价: {close:.2f}\n"
-            f"- MA5={ma5:.2f}  MA10={ma10:.2f}  MA20={ma20:.2f}"
-            + (f"  MA60={ma60:.2f}" if ma60 and not pd.isna(ma60) else "") + "\n"
+            f"{ma_line}\n"
             f"- 乖离率MA5: {bias5:+.1f}%  乖离率MA20: {bias20:+.1f}%\n"
             + bias_warn
+            + ("\n".join(f"- {l}" for l in pos_lines) + "\n" if pos_lines else "")
         )
         signal = self._score_to_signal(score)
         return Section(key="ma_system", title="均线系统", content=content,
                        data={"ma5": ma5, "ma10": ma10, "ma20": ma20, "ma60": ma60,
-                             "close": close, "bias5": bias5},
+                             "ma120": ma120, "ma250": ma250,
+                             "close": close, "bias5": bias5,
+                             "above_ma250": above_ma250, "above_ma120": above_ma120},
                        score=score, signal=signal)
 
     def _analyze_macd(self, df) -> Section:
@@ -345,62 +392,209 @@ class TechnicalAnalyzer(BaseAnalyzer):
                        score=score, signal=self._score_to_signal(score))
 
     def _analyze_pattern_llm(self, df, stock_name, llm_call) -> Section:
-        recent = df.tail(10)[["date", "open", "high", "low", "close", "volume"]].to_string(index=False)
-        prompt = f"""你是技术分析专家。请分析以下 {stock_name} 最近10日K线数据，识别形态：
-{recent}
+        tail20 = df.tail(20)
+        recent_str = tail20[["date", "open", "high", "low", "close", "volume"]].to_string(index=False)
+        last = df.iloc[-1]
+        ma5  = round(float(last.get("ma5")  or 0), 2)
+        ma10 = round(float(last.get("ma10") or 0), 2)
+        ma20 = round(float(last.get("ma20") or 0), 2)
+        ma60 = round(float(last.get("ma60") or 0), 2)
+        dif  = round(float(last.get("dif")  or 0), 4)
+        dea  = round(float(last.get("dea")  or 0), 4)
+        rsi6 = round(float(last.get("rsi6") or 50), 1)
+        vol_ratio = round(float(last.get("vol_ratio") or 1.0), 2)
 
-请输出：
-1. 识别到的K线形态（如：双底、头肩顶、三角收敛、旗形整理等）
-2. 形态的可靠性（高/中/低）
-3. 形态暗示的后续走势方向
-4. 简要技术结论（1-2句话）
+        prompt = f"""你是专业技术分析师，请对 {stock_name} 最近20日K线形态进行深度分析。
 
-请简洁回答，不超过150字。"""
+【近20日K线数据】
+{recent_str}
+
+【当前指标快照】
+- 均线：MA5={ma5}  MA10={ma10}  MA20={ma20}  MA60={ma60}
+- MACD：DIF={dif}  DEA={dea}
+- RSI(6)={rsi6}  量比={vol_ratio}x
+
+【要求】请输出以下内容，每点都要结合实际数据（日期、价格）说明：
+
+1. **识别的形态**
+   - 形态名称（如：双底/头肩顶/三角收敛/旗形/楔形/W底等）
+   - 具体引用：形态的关键价格点（注明日期和价格，如"X月X日高点XX，X月X日回落至XX形成左肩"）
+   - 可靠性：高/中/低，并说明理由（成交量配合/对称性/时间周期）
+
+2. **形态暗示走势**
+   - 突破方向及目标价位（给出具体数字，如"若有效突破XX，目标看XX-XX"）
+   - 突破确认条件（收盘价/成交量要求）
+
+3. **关键支撑与阻力**
+   - 近期支撑位：XX（对应X月X日低点/均线）
+   - 近期阻力位：XX（对应X月X日高点/均线压力）
+
+4. **操作建议**
+   - 当前位置建议（持有/减仓/加仓/观望）
+   - 入场条件：满足【具体价格或信号】时可考虑操作
+   - 止损设置：XX价格以下止损（基于形态失效判断）
+
+输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
         try:
             content = llm_call(prompt).strip()
         except Exception as e:
             content = f"K线形态分析失败：{e}"
-        return Section(key="pattern", title="K线形态", content=content, score=50, signal="hold")
+        # 提取信号
+        score, signal = 50, "hold"
+        signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
+                      "减仓": ("hold", 42), "卖出": ("sell", 28)}
+        for label, (sig, sc) in signal_map.items():
+            if f"【信号】{label}" in content:
+                signal, score = sig, sc
+                break
+        return Section(key="pattern", title="K线形态", content=content, score=score, signal=signal)
 
     def _analyze_wave_llm(self, df, stock_name, llm_call) -> Section:
-        closes = df.tail(60)["close"].round(2).tolist()
-        prompt = f"""你是波浪理论专家。请基于以下 {stock_name} 近60日收盘价，进行波浪分析：
+        tail = df.tail(60)
+        closes = tail["close"].round(2).tolist()
+        highs  = tail["high"].round(2).tolist()
+        lows   = tail["low"].round(2).tolist()
+        dates  = tail["date"].tolist()
+        # 近期高低点
+        max_idx = int(tail["high"].idxmax() - tail.index[0])
+        min_idx = int(tail["low"].idxmin()  - tail.index[0])
+        recent_high_date  = dates[max_idx] if max_idx < len(dates) else ""
+        recent_high_price = highs[max_idx]  if max_idx < len(highs) else ""
+        recent_low_date   = dates[min_idx]  if min_idx < len(dates) else ""
+        recent_low_price  = lows[min_idx]   if min_idx < len(lows)  else ""
+        last = df.iloc[-1]
+        cur_price = round(float(last["close"]), 2)
+        ma20  = round(float(last.get("ma20")  or 0), 2)
+        ma60  = round(float(last.get("ma60")  or 0), 2)
+        ma120 = round(float(last.get("ma120") or 0), 2)
+        ma250 = round(float(last.get("ma250") or 0), 2)
+
+        prompt = f"""你是波浪理论专家，请对 {stock_name} 进行专业波浪分析。
+
+【近60日收盘价序列】（时间从早到晚）
 {closes}
 
-请分析：
-1. 当前所处的波浪位置（第几浪、推进浪还是调整浪）
-2. 预计下一步走势
-3. 关键的支撑/压力位
-4. 投资建议（买入/持有/观望/卖出）
+【区间高低点参考】
+- 近60日高点：{recent_high_price}（{recent_high_date}）
+- 近60日低点：{recent_low_price}（{recent_low_date}）
+- 当前价格：{cur_price}  MA20={ma20}  MA60={ma60}  MA120={ma120}（半年线）  MA250={ma250}（年线）
 
-请简洁回答，不超过200字。"""
+【要求】请进行专业波浪分析，必须包含以下内容：
+
+1. **波浪计数**
+   - 判断大级别趋势背景（上升趋势/下降趋势/整理）
+   - 当前处于第几浪（1/2/3/4/5浪，或A/B/C调整浪），给出理由
+   - 关键：引用具体价格点说明浪的起止（如"从X价格启动第X浪，运行至X价格"）
+
+2. **当前浪的状态**
+   - 该浪是否已完成或进行中
+   - 浪内部结构（如正处于5浪中的iii子浪）
+
+3. **下一步预判**
+   - 最可能的走势及目标价位区间（给出具体数字）
+   - 次要情景（如主情景失效则转为）
+   - 关键变盘时间窗口（如有周期规律则指出）
+
+4. **关键点位**
+   - 主要支撑：XX（若跌破则波浪计数修正）
+   - 主要阻力：XX（突破后下一目标XX）
+   - 浪的失效位：XX（跌破/突破此位则当前计数作废）
+
+5. **操作建议**
+   - 当前适合的操作策略（分批买/持有/减仓等）
+   - 入场价位：XX附近，止损：XX，目标：XX
+
+输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
         try:
             content = llm_call(prompt).strip()
         except Exception as e:
             content = f"波浪分析失败：{e}"
-        return Section(key="wave", title="波浪理论", content=content, score=50, signal="hold")
+        score, signal = 50, "hold"
+        signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
+                      "减仓": ("hold", 42), "卖出": ("sell", 28)}
+        for label, (sig, sc) in signal_map.items():
+            if f"【信号】{label}" in content:
+                signal, score = sig, sc
+                break
+        return Section(key="wave", title="波浪理论", content=content, score=score, signal=signal)
 
     def _analyze_chan_llm(self, df, stock_name, llm_call) -> Section:
-        closes = df.tail(60)["close"].round(2).tolist()
-        highs  = df.tail(60)["high"].round(2).tolist()
-        lows   = df.tail(60)["low"].round(2).tolist()
-        prompt = f"""你是缠论专家。请基于以下 {stock_name} 近60日价格数据，进行缠论分析：
-收盘价：{closes}
-最高价：{highs}
-最低价：{lows}
+        tail = df.tail(60)
+        closes = tail["close"].round(2).tolist()
+        highs  = tail["high"].round(2).tolist()
+        lows   = tail["low"].round(2).tolist()
+        dates  = tail["date"].tolist()
+        last = df.iloc[-1]
+        cur_price = round(float(last["close"]), 2)
+        dif  = round(float(last.get("dif")  or 0), 4)
+        dea  = round(float(last.get("dea")  or 0), 4)
+        rsi6 = round(float(last.get("rsi6") or 50), 1)
+        ma5   = round(float(last.get("ma5")   or 0), 2)
+        ma20  = round(float(last.get("ma20")  or 0), 2)
+        ma60  = round(float(last.get("ma60")  or 0), 2)
+        ma120 = round(float(last.get("ma120") or 0), 2)
+        ma250 = round(float(last.get("ma250") or 0), 2)
+        vol_ratio = round(float(last.get("vol_ratio") or 1.0), 2)
+        # 日期标注的序列（每10个标注一次）
+        labeled = []
+        for i, (d, c, h, lo) in enumerate(zip(dates, closes, highs, lows)):
+            if i % 10 == 0 or i == len(dates) - 1:
+                labeled.append(f"{d}: 收{c} 高{h} 低{lo}")
+        labeled_str = "\n".join(labeled)
 
-请分析：
-1. 当前所处的缠论结构（笔/线段/中枢状态）
-2. 是否出现顶背驰或底背驰信号
-3. 当前的买卖点等级（一买/二买/三买 或 一卖/二卖/三卖）
-4. 操作建议
+        prompt = f"""你是缠论专家，请对 {stock_name} 进行专业缠论分析。
 
-请简洁回答，不超过200字。"""
+【近60日价格序列（关键节点标注）】
+{labeled_str}
+
+【当前指标】
+当前价={cur_price}  MA5={ma5}  MA20={ma20}  MA60={ma60}  MA120={ma120}（半年线）  MA250={ma250}（年线）  DIF={dif}  DEA={dea}  RSI(6)={rsi6}  量比={vol_ratio}x
+
+【近60日完整收盘价】
+{closes}
+
+【要求】请进行严格的缠论分析，必须包含：
+
+1. **笔和线段结构**
+   - 识别近期形成的笔（给出起止价格及日期）
+   - 是否已形成线段或中枢，中枢区间是多少
+
+2. **中枢分析**
+   - 当前是否在中枢内/中枢上方/中枢下方运行
+   - 中枢区间：XX ~ XX（对应具体价格区间）
+   - 是否有中枢突破或中枢扩张迹象
+
+3. **背驰判断**（这是核心，必须给出具体分析）
+   - 是否出现顶背驰：如是，说明哪几笔的MACD（柱面积/DIF绝对值）在减小，对应价格反而新高
+   - 是否出现底背驰：如是，说明哪几笔的MACD在减小，对应价格反而新低
+   - 背驰强度（弱背驰/背驰）及判断依据
+
+4. **买卖点判断**
+   - 当前最近形成的买卖点类型（一买/二买/三买/一卖/二卖/三卖）
+   - 给出具体的点位价格及判断依据
+
+5. **后市预判**
+   - 主要走势预判及目标位（给出价格区间）
+   - 关键确认信号（满足什么条件则确认方向）
+
+6. **操作建议**
+   - 建议操作：买入/持有/减仓/卖出（附条件）
+   - 参考止损位：XX（基于缠论笔段失效判断）
+   - 目标位：XX ~ XX
+
+输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
         try:
             content = llm_call(prompt).strip()
         except Exception as e:
             content = f"缠论分析失败：{e}"
-        return Section(key="chan", title="缠论分析", content=content, score=50, signal="hold")
+        score, signal = 50, "hold"
+        signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
+                      "减仓": ("hold", 42), "卖出": ("sell", 28)}
+        for label, (sig, sc) in signal_map.items():
+            if f"【信号】{label}" in content:
+                signal, score = sig, sc
+                break
+        return Section(key="chan", title="缠论分析", content=content, score=score, signal=signal)
 
     def _analyze_chip(self, df: pd.DataFrame, stock_code: str) -> Section:
         """筹码分布：成本集中度分析"""
@@ -614,6 +808,125 @@ class TechnicalAnalyzer(BaseAnalyzer):
             return Section(key="margin", title="融资融券",
                            content=f"融资券数据获取失败（可能不在两融标的）：{e}",
                            score=50, signal="hold")
+
+    def _analyze_llm_tech(self, df: pd.DataFrame, stock_name: str, llm_call, sections: list) -> Section:
+        """基于所有已计算的量化指标，让 LLM 做综合技术精讲，输出具体点位和操作建议。"""
+        last  = df.iloc[-1]
+        prev5 = df.tail(6).iloc[0]  # 5日前
+        close  = round(float(last["close"]), 2)
+        close5 = round(float(prev5["close"]), 2)
+        chg5   = round((close - close5) / close5 * 100, 2)
+
+        # 组装量化快照
+        ma5   = round(float(last.get("ma5")   or 0), 2)
+        ma10  = round(float(last.get("ma10")  or 0), 2)
+        ma20  = round(float(last.get("ma20")  or 0), 2)
+        ma60  = round(float(last.get("ma60")  or 0), 2)
+        ma120 = round(float(last.get("ma120") or 0), 2)
+        ma250 = round(float(last.get("ma250") or 0), 2)
+        dif  = round(float(last.get("dif")  or 0), 4)
+        dea  = round(float(last.get("dea")  or 0), 4)
+        bar  = round(float(last.get("macd_bar") or 0), 4)
+        rsi6 = round(float(last.get("rsi6")  or 50), 1)
+        r12  = round(float(last.get("rsi12") or 50), 1)
+        k    = round(float(last.get("kdj_k") or 50), 1)
+        d_   = round(float(last.get("kdj_d") or 50), 1)
+        j    = round(float(last.get("kdj_j") or 50), 1)
+        boll_u = round(float(last.get("boll_upper") or 0), 2)
+        boll_m = round(float(last.get("boll_mid")   or 0), 2)
+        boll_l = round(float(last.get("boll_lower") or 0), 2)
+        wr14   = round(float(last.get("wr14") or -50), 1)
+        vol_r  = round(float(last.get("vol_ratio") or 1.0), 2)
+
+        # 近5日涨跌幅序列
+        tail5 = df.tail(5)
+        daily_chg = []
+        for i in range(len(tail5)):
+            row = tail5.iloc[i]
+            c = round(float(row["close"]), 2)
+            if i > 0:
+                prev_c = round(float(tail5.iloc[i-1]["close"]), 2)
+                pct = round((c - prev_c) / prev_c * 100, 2)
+                daily_chg.append(f"{row['date']}({pct:+.2f}%)")
+            else:
+                daily_chg.append(f"{row['date']}(基准)")
+
+        # 从已计算 sections 中提取背离摘要
+        div_summary = ""
+        for s in sections:
+            if s.key == "divergence" and s.content:
+                first_line = s.content.split("\n")[0]
+                div_summary = f"背离检测：{first_line}"
+                break
+
+        # 近10日 K 线
+        tail10_str = df.tail(10)[["date", "open", "high", "low", "close", "volume"]].to_string(index=False)
+
+        prompt = f"""你是顶尖A股技术分析师，请对 {stock_name} 进行全面深度的技术面精讲分析。
+
+【当前行情快照】
+- 当前价格：{close}（近5日变动：{chg5:+.2f}%）
+- 近5日日内变化：{', '.join(daily_chg)}
+
+【近10日K线数据】
+{tail10_str}
+
+【技术指标量化数据】
+均线系统：MA5={ma5}  MA10={ma10}  MA20={ma20}  MA60={ma60}  MA120={ma120}（半年线）  MA250={ma250}（年线）
+MACD：DIF={dif}  DEA={dea}  MACD柱={bar}
+RSI：RSI(6)={rsi6}  RSI(12)={r12}
+KDJ：K={k}  D={d_}  J={j}
+布林带：上轨={boll_u}  中轨={boll_m}  下轨={boll_l}
+威廉WR(14)={wr14}（>-20超买，<-80超卖）
+量比={vol_r}x（>2放量，<0.5缩量）
+{div_summary}
+
+【要求】请按以下结构逐项深度分析，每项都必须结合以上数据给出**具体数字和判断依据**：
+
+## 1. 趋势综合判断
+- 大趋势方向（上升/震荡/下降），判断依据（均线排列 + 价格与MA60关系）
+- 短期趋势（5-10日维度），当前属于反弹/回调/突破/整理哪种状态
+
+## 2. 动能与指标综合解读
+- MACD 当前状态：零轴位置、金死叉情况、柱线扩缩方向，对应的买卖含义
+- RSI 解读：当前值区间（超买/超卖/中性），与价格走势是否出现背离
+- KDJ 解读：J值位置判断（是否极值区），金死叉情况，当前意义
+- 多指标共振：上述指标是否同向共振，共振程度如何
+
+## 3. 关键价格位分析
+- **当前阻力位**（列出2-3个，标明来源，如"MA20={ma20}构成近期压力"）
+- **当前支撑位**（列出2-3个，标明来源，如"布林下轨={boll_l}为技术支撑"）
+- **关键变盘价位**（突破或跌破哪个价格将改变当前趋势判断，标注具体价格）
+
+## 4. 量价配合分析
+- 量比={vol_r}x 结合近期价格走势说明量价关系
+- 是否存在放量滞涨、缩量下跌或其他异常量价信号
+
+## 5. 近期风险提示
+- 当前最主要的技术风险点（顶背离/超买/均线压制/成交量不配合等），具体说明
+- 需要警惕的关键价位（跌破/突破哪个价格意味着技术走坏/走好）
+
+## 6. 操作建议（必须给出具体参数）
+- **短线操作**（1-5日）：方向 + 入场价位区间 + 止损价 + 目标价
+- **中线操作**（1-4周）：方向 + 建仓条件 + 止损价 + 目标价
+- **仓位建议**：当前技术面看多还是看空，建议仓位比例（如：控制在3成以内/可持至5成等）
+
+输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
+
+        try:
+            content = llm_call(prompt).strip()
+        except Exception as e:
+            content = f"技术综合分析失败：{e}"
+
+        score, signal = 50, "hold"
+        signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
+                      "减仓": ("hold", 42), "卖出": ("sell", 28)}
+        for label, (sig, sc) in signal_map.items():
+            if f"【信号】{label}" in content:
+                signal, score = sig, sc
+                break
+        return Section(key="llm_tech", title="技术综合精讲（LLM）",
+                       content=content, score=score, signal=signal)
 
     # ── 超买超卖综合 + 背离检测（新增）──────────────────────
     def _analyze_overbought(self, df) -> Section:
@@ -832,8 +1145,17 @@ class TechnicalAnalyzer(BaseAnalyzer):
         state = "CONFIRMED"
         score = self._strength(dtype, kind, i1, i2, price, ind, ind_name, atr, rsi, vr)
         score = int(round(score * 1.0))     # confirm_mult=1.0
+
+        # 携带日期和具体价格/指标值，供渲染时引用
+        df = getattr(self, "_df", None)
+        d1 = str(df.iloc[i1]["date"]) if df is not None and i1 < len(df) else str(i1)
+        d2 = str(df.iloc[i2]["date"]) if df is not None and i2 < len(df) else str(i2)
+
         return {"type": dtype, "indicator": ind_name, "maturity": state,
-                "score": score, "i1": i1, "i2": i2}
+                "score": score, "i1": i1, "i2": i2,
+                "date1": d1, "date2": d2,
+                "price1": round(float(p1), 3), "price2": round(float(p2), 3),
+                "ind1": round(float(v1), 4),   "ind2": round(float(v2), 4)}
 
     def _strength(self, dtype, kind, i1, i2, price, ind, ind_name, atr, rsi, vr):
         """八因子加权强度评分 0-100（简化版，保留核心因子）。"""
@@ -938,9 +1260,19 @@ class TechnicalAnalyzer(BaseAnalyzer):
                 score = int(round(base * mult))
                 # 早期信号给分不低于状态下限，便于展示
                 score = max(score, 30 if state == "EARLY" else 42)
+
+                df = getattr(self, "_df", None)
+                d1 = str(df.iloc[p1_idx]["date"])  if df is not None and p1_idx < len(df) else str(p1_idx)
+                d2 = str(df.iloc[live_idx]["date"]) if df is not None and live_idx < len(df) else str(live_idx)
+                price_arr = low if kind == "bottom" else high
                 out.append({"type": dtype + "_emerging", "indicator": "MACD",
                             "maturity": state, "score": score,
-                            "i1": p1_idx, "i2": live_idx, "reason": reason})
+                            "i1": p1_idx, "i2": live_idx, "reason": reason,
+                            "date1": d1, "date2": d2,
+                            "price1": round(float(price_arr[p1_idx]), 3),
+                            "price2": round(float(price_arr[live_idx]), 3),
+                            "ind1": round(float(dif[p1_idx]), 4),
+                            "ind2": round(float(dif[live_idx]), 4)})
         return out
 
     @staticmethod
@@ -959,44 +1291,172 @@ class TechnicalAnalyzer(BaseAnalyzer):
         return sorted(best.values(), key=lambda x: -x["score"])
 
     def _build_divergence_section(self, signals) -> Section:
-        """把背离信号列表渲染成 Section。"""
+        """把背离信号列表渲染成详细的 Section，包含具体 K 线引用、确认条件、操作建议。"""
         TYPE_LABEL = {
             "regular_bull": ("🟢 常规底背离", "反转看涨", "buy"),
             "regular_bear": ("🔴 常规顶背离", "反转看跌", "sell"),
-            "hidden_bull":  ("🟢 隐藏底背离", "延续看涨", "buy"),
-            "hidden_bear":  ("🔴 隐藏顶背离", "延续看跌", "sell"),
+            "hidden_bull":  ("🔵 隐藏底背离", "趋势延续（多）", "buy"),
+            "hidden_bear":  ("🟠 隐藏顶背离", "趋势延续（空）", "sell"),
         }
-        MAT_LABEL = {"EARLY": "迹象浮现", "FORMING": "进行中", "CONFIRMED": "已确认"}
+        MAT_LABEL = {
+            "EARLY":     ("迹象浮现",  "⚠️ 预警级"),
+            "FORMING":   ("进行中",    "🔔 观察级"),
+            "CONFIRMED": ("已确认",    "✅ 参考级"),
+        }
 
         if not signals:
             return Section(key="divergence", title="背离检测",
-                           content="近期未检测到顶/底背离信号（含早期/进行中）。\n"
-                                   "- 检测方法：分形摆动点 + MACD(DIF)/RSI 双指标 + 成熟度状态机\n",
+                           content=(
+                               "近期未检测到顶/底背离信号（含早期/进行中）。\n"
+                               "- 检测方法：分形摆动点 + MACD(DIF)/RSI 双指标 + 成熟度状态机\n"
+                               "- 背离生成需要近期存在可比较的相邻摆动高/低点，若行情单边运行则无法产生\n"
+                           ),
                            data={"signals": []}, score=50, signal="hold")
 
+        # 取当前价格辅助计算关键点位
+        df = getattr(self, "_df", None)
+        cur_price = float(df.iloc[-1]["close"]) if df is not None else 0.0
+        ma5  = float(df.iloc[-1].get("ma5")  or 0) if df is not None else 0.0
+        ma10 = float(df.iloc[-1].get("ma10") or 0) if df is not None else 0.0
+        ma20 = float(df.iloc[-1].get("ma20") or 0) if df is not None else 0.0
+
         lines = []
-        best = signals[0]
         for s in signals[:5]:
             base_type = s["type"].replace("_emerging", "")
+            is_emerging = "_emerging" in s["type"]
             label, meaning, _ = TYPE_LABEL.get(base_type, ("背离", "", "hold"))
-            mat = MAT_LABEL.get(s["maturity"], s["maturity"])
-            reason = s.get("reason", "")
+            mat_short, mat_badge = MAT_LABEL.get(s["maturity"], (s["maturity"], ""))
+            ind_name = s.get("indicator", "MACD")
             grade = "强" if s["score"] >= 70 else ("中" if s["score"] >= 45 else "弱")
-            lines.append(
-                f"**{label}·{mat}**（{s['indicator']}，{meaning}，强度{s['score']}/{grade}）"
-                + (f"\n  {reason}" if reason else ""))
 
-        # 综合评分：最强信号方向决定，成熟度低的往中性收敛
+            d1   = s.get("date1", "")
+            d2   = s.get("date2", "")
+            p1   = s.get("price1", 0.0)
+            p2   = s.get("price2", 0.0)
+            v1   = s.get("ind1",   0.0)
+            v2   = s.get("ind2",   0.0)
+
+            # 标题行
+            lines.append(f"### {label}·{mat_short}  {mat_badge}（{ind_name}，强度 {s['score']}/{grade}）")
+
+            # 具体 K 线引用
+            if "bull" in base_type:
+                lines.append(f"**K线区间**：{d1} 低点 **{p1}** → {d2} 低点 **{p2}**")
+                if p2 < p1:
+                    lines.append(f"  价格：{d1}低({p1}) > {d2}低({p2})  ↓ 价格创新低 {abs(p2-p1)/p1*100:.1f}%")
+                else:
+                    lines.append(f"  价格：{d1}低({p1}) < {d2}低({p2})  ↑ 价格回升 {(p2-p1)/p1*100:.1f}%")
+                lines.append(f"  {ind_name}：第一低点 {v1:.4f} → 第二低点 {v2:.4f}  "
+                             + ("↑ 指标抬升（背离确立）" if v2 > v1 else "↓ 指标同降（尚未背离）"))
+            else:  # bear
+                lines.append(f"**K线区间**：{d1} 高点 **{p1}** → {d2} 高点 **{p2}**")
+                if p2 > p1:
+                    lines.append(f"  价格：{d1}高({p1}) < {d2}高({p2})  ↑ 价格创新高 {(p2-p1)/p1*100:.1f}%")
+                else:
+                    lines.append(f"  价格：{d1}高({p1}) > {d2}高({p2})  ↓ 价格走低")
+                lines.append(f"  {ind_name}：第一高点 {v1:.4f} → 第二高点 {v2:.4f}  "
+                             + ("↓ 指标走弱（背离确立）" if v2 < v1 else "↑ 指标同升（尚未背离）"))
+
+            # 进行时/早期信号的动态 reason
+            if is_emerging and s.get("reason"):
+                lines.append(f"**当前状态**：{s['reason']}")
+
+            # 背离含义解释
+            if base_type == "regular_bear":
+                lines.append(f"**含义**：常规顶背离 = 价格创新高但动能衰减，是上涨趋势潜在反转的预警信号。")
+            elif base_type == "regular_bull":
+                lines.append(f"**含义**：常规底背离 = 价格创新低但动能反弹，是下跌趋势潜在反转的预警信号。")
+            elif base_type == "hidden_bear":
+                lines.append(f"**含义**：隐藏顶背离 = 价格走低但指标抬升，是下跌趋势延续的确认信号。")
+            elif base_type == "hidden_bull":
+                lines.append(f"**含义**：隐藏底背离 = 价格回升但指标仍弱，是上涨趋势延续的确认信号。")
+
+            # 后市确认条件
+            lines.append(f"**后市如何确认**：")
+            if base_type == "regular_bear":
+                confirm_price = round(p2 * 0.97, 2) if p2 else round(cur_price * 0.97, 2)
+                ref_ma = round(min(ma5, ma10) if ma5 and ma10 else cur_price * 0.98, 2)
+                lines.append(f"  1. 价格跌破 MA5（当前 {ma5:.2f}）或 MA10（{ma10:.2f}）**收盘确认**，顶背离大概率开始兑现")
+                lines.append(f"  2. {ind_name} 出现死叉，且零轴向下运行，趋势转空确认")
+                lines.append(f"  3. 成交量若再次放量上冲但价格无法超越 {d2} 高点 {p2}，形态固化")
+                lines.append(f"  4. ⚠️ 若后续价格突破 {p2} 并站稳，顶背离信号失效")
+            elif base_type == "regular_bull":
+                lines.append(f"  1. 价格收复 MA5（当前 {ma5:.2f}）并站稳，底背离开始兑现")
+                lines.append(f"  2. {ind_name} 出现金叉，柱线翻红并扩大，动能反转确认")
+                lines.append(f"  3. 成交量在价格反弹时放大，价涨量增配合")
+                lines.append(f"  4. ⚠️ 若后续价格跌破 {d2} 低点 {p2}，底背离信号失效")
+            elif base_type == "hidden_bear":
+                lines.append(f"  1. 当前价格若继续走低并跌破 MA20（{ma20:.2f}），延续趋势确认")
+                lines.append(f"  2. {ind_name} 持续在零轴下方运行，空头趋势不变")
+                lines.append(f"  ⚠️ 若价格强势反弹突破 {p1}，隐藏顶背离失效")
+            elif base_type == "hidden_bull":
+                lines.append(f"  1. 价格回调不破 {d2} 低点 {p2}，继续上行趋势确认")
+                lines.append(f"  2. {ind_name} 金叉并在零轴上方，多头延续")
+                lines.append(f"  ⚠️ 若价格跌破 {p2}，隐藏底背离失效")
+
+            # 关键点位
+            lines.append(f"**关键点位**：")
+            if "bear" in base_type:
+                stop_loss  = round(p2 * 1.02, 2) if p2 else round(cur_price * 1.03, 2)
+                target1    = round(p2 * 0.95, 2) if p2 else round(cur_price * 0.95, 2)
+                target2    = round(p2 * 0.90, 2) if p2 else round(cur_price * 0.90, 2)
+                lines.append(f"  - 上方阻力：{p2}（{d2} 高点，即背离右侧顶点）")
+                lines.append(f"  - 止损参考：{stop_loss}（若持空，跌破此价止损）")
+                lines.append(f"  - 下方目标：初步 {target1}，若有效跌破 MA20 则看 {target2}")
+                lines.append(f"  - 支撑参考：MA20={ma20:.2f}，若跌破将加速确认背离")
+            else:
+                stop_loss = round(p2 * 0.98, 2) if p2 else round(cur_price * 0.97, 2)
+                target1   = round(p2 * 1.05, 2) if p2 else round(cur_price * 1.05, 2)
+                target2   = round(p2 * 1.10, 2) if p2 else round(cur_price * 1.10, 2)
+                lines.append(f"  - 下方支撑：{p2}（{d2} 低点，即背离右侧底点）")
+                lines.append(f"  - 止损参考：{stop_loss}（若持多，跌破此价止损）")
+                lines.append(f"  - 上方目标：初步 {target1}，若放量突破 MA20={ma20:.2f} 则看 {target2}")
+                lines.append(f"  - 压力参考：MA10={ma10:.2f}，MA20={ma20:.2f}")
+
+            # 操作建议
+            lines.append(f"**操作建议**：")
+            mat = s["maturity"]
+            if base_type == "regular_bear":
+                if mat == "CONFIRMED":
+                    lines.append(f"  - 已确认，建议轻仓者谨慎追多，持仓者逢反弹至压力位分批减仓")
+                    lines.append(f"  - 激进者可在价格跌破 MA5 且量能配合时尝试短空，止损设于 {p2}")
+                elif mat == "FORMING":
+                    lines.append(f"  - 进行中，建议暂缓追涨，等待方向选择确认后再操作")
+                else:
+                    lines.append(f"  - 迹象浮现（早期预警），建议观望为主，不追高，重点关注量能变化")
+            elif base_type == "regular_bull":
+                if mat == "CONFIRMED":
+                    lines.append(f"  - 已确认，可在价格收复 MA5（{ma5:.2f}）后分批轻仓试多")
+                    lines.append(f"  - 严格止损：跌破 {stop_loss} 立即止损，仓位不超过 3 成")
+                elif mat == "FORMING":
+                    lines.append(f"  - 进行中，耐心等待价格企稳信号（MA5 收口/缩量回调），不抢底")
+                else:
+                    lines.append(f"  - 迹象浮现（早期预警），观望为主，留意后续能否形成企稳形态")
+            elif "bear" in base_type:
+                lines.append(f"  - 隐藏顶背离为趋势延续信号，当前为空头市，反弹为卖出机会")
+                lines.append(f"  - 建议持仓者坚持持仓，反弹至 {ma10:.2f}~{ma20:.2f} 区间减仓")
+            else:
+                lines.append(f"  - 隐藏底背离为趋势延续信号，当前为多头市，回调为买入机会")
+                lines.append(f"  - 建议在价格回调至 MA5~MA10 区间（{ma5:.2f}~{ma10:.2f}）时分批买入")
+
+            lines.append("")  # 空行分隔
+
+        # 底部统一注释
+        note = (
+            "---\n"
+            "**成熟度说明**：迹象浮现(预警) → 进行中(未确认) → 已确认(可参考)\n"
+            "**背离类型**：常规背离=反转信号；隐藏背离=趋势延续信号\n"
+            "**重要提示**：背离是预警信号而非充分条件，早期信号尤其须结合均线/成交量二次确认后操作\n"
+        )
+
+        # 综合评分：最强信号方向
+        best = signals[0]
         base_type = best["type"].replace("_emerging", "")
-        _, _, direction = TYPE_LABEL.get(base_type, ("", "", "hold"))
         if "bull" in base_type:
-            score = 50 + int((best["score"] / 100) * 30)   # 50~80
+            score = 50 + int((best["score"] / 100) * 30)
         else:
-            score = 50 - int((best["score"] / 100) * 30)   # 20~50
+            score = 50 - int((best["score"] / 100) * 30)
 
-        note = ("\n- 成熟度：迹象浮现(预警) → 进行中(未确认) → 已确认(可参考)\n"
-                "- 常规背离=反转信号；隐藏背离=趋势延续信号\n"
-                "- 背离是预警而非充分条件，需结合均线/成交量确认，早期信号尤其谨慎\n")
         content = "\n".join(lines) + "\n" + note
         return Section(key="divergence", title="背离检测", content=content,
                        data={"signals": signals[:5], "best": best},

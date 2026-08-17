@@ -98,6 +98,7 @@ def merge_results(
         "overall_signal": overall_signal,
         "overall_signal_label": SIGNAL_LABELS.get(overall_signal, overall_signal),
         "conclusion": conclusion,
+        "tech_summary": _build_tech_summary(result_map.get("technical")),
         "dimensions": [r.to_dict() for r in results],
         "generated_at": datetime.now(TZ_CN).isoformat(),
     }
@@ -155,3 +156,98 @@ def _build_conclusion(
     parts = [f"{r.name}：{r.summary}" for r in results if r.summary and not r.error]
     signal_label = SIGNAL_LABELS.get(overall_signal, overall_signal)
     return f"综合评分 {overall_score}/100，信号：{signal_label}。" + "；".join(parts) + "。"
+
+
+def _build_tech_summary(tech: DimensionResult | None) -> str:
+    """
+    生成技术面一句话 AI summary，格式：
+      🤖 偏多 — RSI底背离确认，MACD金叉（影响：短线买入信号，关注量能配合）
+    纯规则生成，无需 LLM，保证每次都有输出。
+    """
+    if tech is None or tech.error:
+        return ""
+
+    sec_map = {s.key: s for s in tech.sections}
+    parts_pos, parts_neg, parts_note = [], [], []
+
+    # 背离
+    div = sec_map.get("divergence")
+    if div and div.content:
+        first = div.content.strip().split("\n")[0]
+        if "顶背离" in first:
+            parts_neg.append("顶背离" + ("·已确认" if "已确认" in first else "·迹象浮现" if "迹象" in first else ""))
+        if "底背离" in first:
+            parts_pos.append("底背离" + ("·已确认" if "已确认" in first else "·迹象浮现" if "迹象" in first else ""))
+
+    # MACD
+    macd = sec_map.get("macd")
+    if macd:
+        d = macd.data or {}
+        if d.get("golden"):  parts_pos.append("MACD金叉")
+        elif d.get("death"): parts_neg.append("MACD死叉")
+        elif d.get("dif", 0) > 0: parts_pos.append("MACD零轴上方")
+        else: parts_neg.append("MACD零轴下方")
+
+    # RSI
+    rsi = sec_map.get("rsi")
+    if rsi:
+        r6 = (rsi.data or {}).get("rsi6", 50)
+        if r6 > 70:   parts_neg.append(f"RSI超买({r6:.0f})")
+        elif r6 < 30: parts_pos.append(f"RSI超卖({r6:.0f})")
+
+    # KDJ
+    kdj = sec_map.get("kdj")
+    if kdj:
+        d = kdj.data or {}
+        if d.get("golden"):  parts_pos.append("KDJ金叉")
+        elif d.get("death"): parts_neg.append("KDJ死叉")
+
+    # 布林带
+    boll = sec_map.get("bollinger")
+    if boll:
+        pos = (boll.data or {}).get("pos_pct", 50)
+        if pos > 85:  parts_neg.append("触布林上轨")
+        elif pos < 15: parts_pos.append("触布林下轨")
+
+    # 均线系统
+    ma = sec_map.get("ma_system")
+    if ma:
+        content = ma.content or ""
+        if "多头排列" in content: parts_pos.append("均线多头")
+        elif "空头排列" in content: parts_neg.append("均线空头")
+        d = ma.data or {}
+        if d.get("above_ma250") is False and d.get("ma250"):
+            parts_neg.append("年线压制")
+        elif d.get("above_ma250"):
+            parts_pos.append("站上年线")
+
+    # 量价
+    vol = sec_map.get("volume")
+    if vol and vol.score != 50:
+        if vol.score >= 65: parts_pos.append("量价配合")
+        elif vol.score <= 35: parts_neg.append("放量下跌")
+
+    # 整体信号
+    score = tech.score
+    if score >= 70:   tone, emoji = "偏多", "🟢"
+    elif score >= 58: tone, emoji = "中性偏多", "🔵"
+    elif score >= 42: tone, emoji = "中性", "⚪"
+    elif score >= 30: tone, emoji = "中性偏空", "🟠"
+    else:             tone, emoji = "偏空", "🔴"
+
+    # 拼接核心信号（最多3条）
+    signals = parts_pos[:2] + parts_neg[:2]
+    signals = signals[:3]
+    sig_str = "，".join(signals) if signals else "无明确信号"
+
+    # 影响描述
+    if parts_pos and parts_neg:
+        impact = "多空信号混杂，需后续确认"
+    elif len(parts_pos) >= 2:
+        impact = "多头信号共振，短线偏强"
+    elif len(parts_neg) >= 2:
+        impact = "空头信号共振，注意回调风险"
+    else:
+        impact = "信号中性，建议观望"
+
+    return f"🤖 {tone} — {sig_str}（影响：{impact}）"

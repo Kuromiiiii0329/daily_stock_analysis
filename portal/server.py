@@ -136,12 +136,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_json(self, code: int, body: dict):
         data = json.dumps(body, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self._cors()
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(data)
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass  # 客户端已断开（Windows 常见，属正常现象）
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -372,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
                     break
 
                 time.sleep(0.3)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # 客户端断开，正常退出
 
     def _handle_analyze(self, payload: dict):
