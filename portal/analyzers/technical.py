@@ -157,10 +157,55 @@ class TechnicalAnalyzer(BaseAnalyzer):
 
         # 成交量均线
         if not volume.empty:
+            # ── 单位一致性归一（防御性）──────────────────────────
+            # 历史 kline.csv 可能由多个数据源增量拼接而成，而各源成交量
+            # 单位不一致（Tushare/Baostock 落"股"，Pytdx/Efinance/Akshare
+            # 落"手"，1 手 = 100 股，差 100 倍）。若不归一，最新一行较历史
+            # 出现约 100 倍量级跳变，会算出"量比=0.01x"这类明显错误的值。
+            # 这里以历史中位数为基准，把偏离基准约 100 倍量级的行拉回同一量级，
+            # 既修正当日异常，也能修复已被污染的历史缓存。
+            volume = self._normalize_volume_scale(volume)
+            df["volume"] = volume
             df["vol_ma5"]  = volume.rolling(5).mean()
             df["vol_ratio"] = volume / df["vol_ma5"].replace(0, 1e-9)
 
         return df
+
+    @staticmethod
+    def _normalize_volume_scale(volume: pd.Series) -> pd.Series:
+        """把同一序列内因数据源混用产生的 100 倍量级跳变归一到统一量级。
+
+        思路：取所有正值成交量的中位数作为基准量级；对每一行，若其与基准的
+        比值接近 100 或 1/100（在 [30, 300] 或 [1/300, 1/30] 区间内），判定为
+        单位错位（手 vs 股），乘/除 100 拉回基准量级。阈值取宽区间以容忍正常
+        的放量/缩量波动（通常在 10 倍以内），只捕捉"手↔股"这种整两个数量级的跳变。
+        """
+        try:
+            vol = pd.to_numeric(volume, errors="coerce")
+            positive = vol[vol > 0]
+            if len(positive) < 5:
+                return volume  # 数据太少，无法稳健判定基准，原样返回
+            base = float(positive.median())
+            if base <= 0:
+                return volume
+
+            def _fix(v: float) -> float:
+                if v is None or not (v > 0):
+                    return v
+                ratio = v / base
+                if 30 <= ratio <= 300:       # 该行比基准大约 100 倍 → 多乘了 100（股 vs 手）
+                    return v / 100.0
+                if 1 / 300 <= ratio <= 1 / 30:  # 该行比基准小约 100 倍 → 少乘 100（手 vs 股）
+                    return v * 100.0
+                return v
+
+            fixed = vol.map(_fix)
+            # 保留原 index，NaN（无法转数值的行）回填原值
+            fixed = fixed.where(fixed.notna(), volume)
+            return fixed
+        except Exception:
+            # 归一属防御性增强，任何异常都不应影响主流程，退回原始数据
+            return volume
 
     # ── 子模块 ───────────────────────────────────────────────
     def _analyze_ma(self, df, stock_code) -> Section:
@@ -437,6 +482,8 @@ class TechnicalAnalyzer(BaseAnalyzer):
 输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
         try:
             content = llm_call(prompt).strip()
+            if not content:
+                content = "⚠️ LLM 未返回内容（可能受 token 上限或模型行为影响），请重试。"
         except Exception as e:
             content = f"K线形态分析失败：{e}"
         # 提取信号
@@ -507,6 +554,8 @@ class TechnicalAnalyzer(BaseAnalyzer):
 输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
         try:
             content = llm_call(prompt).strip()
+            if not content:
+                content = "⚠️ LLM 未返回内容（可能受 token 上限或模型行为影响），请重试。"
         except Exception as e:
             content = f"波浪分析失败：{e}"
         score, signal = 50, "hold"
@@ -585,6 +634,8 @@ class TechnicalAnalyzer(BaseAnalyzer):
 输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
         try:
             content = llm_call(prompt).strip()
+            if not content:
+                content = "⚠️ LLM 未返回内容（可能受 token 上限或模型行为影响），请重试。"
         except Exception as e:
             content = f"缠论分析失败：{e}"
         score, signal = 50, "hold"

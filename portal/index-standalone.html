@@ -1970,14 +1970,17 @@ class RunTab {
       loading.classList.add('hidden');
       btn.disabled = false;
 
-      if (data.error) {
-        errEl.textContent = '❌ ' + data.error;
+      if (!res.ok || data.ok === false || data.error) {
+        errEl.textContent = '❌ ' + (data.error || `请求失败（HTTP ${res.status}）`);
         errEl.classList.remove('hidden');
         noteEl.textContent = '请先对该股票运行一次深度分析';
         return;
       }
-      noteEl.textContent = `数据区间：${data.stock_days}  共 ${data.total_days} 个交易日`;
-      this._renderBacktestResult(data);
+      // 后端返回结构为 { ok, code, backtest: { signals, total_days, stock_days } }，
+      // 回测结果字段都在 backtest 层；兼容旧的平铺结构。
+      const bt = data.backtest || data;
+      noteEl.textContent = `数据区间：${bt.stock_days}  共 ${bt.total_days} 个交易日`;
+      this._renderBacktestResult(bt);
     } catch (e) {
       loading.classList.add('hidden');
       btn.disabled = false;

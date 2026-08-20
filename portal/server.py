@@ -985,7 +985,9 @@ def _make_llm_caller(log):
                     messages=[{"role": "user", "content": prompt}],
                     api_base=hai_base,
                     api_key=hai_key,
-                    max_tokens=2048,   # litellm 自动转 max_completion_tokens
+                    max_tokens=8192,   # litellm 自动转 max_completion_tokens；调大以容纳
+                                       # K线形态/波浪/缠论等长结构化输出，并为 GPT-5 系列的
+                                       # reasoning 开销预留预算，避免返回空内容（content=""）
                     timeout=90,
                 )
                 if not is_gpt5:
@@ -1015,7 +1017,7 @@ def _make_llm_caller(log):
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=1024,
+                max_tokens=8192,   # 调大以容纳长结构化输出（K线形态/波浪/缠论），避免返回空内容
                 timeout=60,
             )
             return resp.choices[0].message.content or ""
