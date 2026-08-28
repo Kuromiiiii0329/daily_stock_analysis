@@ -22,6 +22,7 @@ ORDER_WITH_PREFIX = [
     ("js/tabs/settings.js",          "SETTINGS"),
     ("js/tabs/guide.js",             None),
     ("js/tabs/run.js",               "RUN"),
+    ("js/tabs/chat.js",              "CHAT"),
     ("js/app.js",                    "APP"),
 ]
 

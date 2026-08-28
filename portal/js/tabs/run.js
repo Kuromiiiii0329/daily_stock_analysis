@@ -154,6 +154,13 @@ export class RunTab {
                 <div id="dim-list" class="mt-2 space-y-2"></div>
               </details>
 
+              <!-- 🤖 Agent 综合研判开关（选项B：基于已算好的指标做深度研判）-->
+              <label class="flex items-center gap-2 mb-2 px-1 cursor-pointer select-none">
+                <input type="checkbox" id="chk-agent-review"
+                  class="w-3.5 h-3.5 accent-blue-600"/>
+                <span class="text-xs text-gray-600">🤖 深度分析后附加 <b>Agent 综合研判</b>（复用已算指标，多花约 1 次 LLM）</span>
+              </label>
+
               <!-- 操作按钮行：[深度分析] [大盘复盘] [全量分析] -->
               <div class="flex gap-2">
                 <button id="btn-deep"
@@ -748,7 +755,8 @@ export class RunTab {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stock_code: code, stock_name: name || code, dimensions: dims, modules: modulesMap,
           llm_mode: this._s.get().llm_note_mode || 'batch',
-          open_report: this._s.get().auto_open_html !== false }),
+          open_report: this._s.get().auto_open_html !== false,
+          agent_review: !!this._c.querySelector('#chk-agent-review')?.checked }),
       });
       const d = await res.json();
       if (!d.ok) throw new Error(d.error);
@@ -895,6 +903,15 @@ export class RunTab {
       mbox.dataset.raw = '';
       if (empty) empty.classList.add('hidden');
       this._report.render(rpt);
+      // 🤖 Agent 综合研判（选项B）：若有则在结构化报告末尾追加一节
+      if (rpt && rpt.agent_review) {
+        const card = document.createElement('div');
+        card.className = 'mt-4 p-3 rounded-xl border border-blue-200 bg-blue-50/60';
+        card.innerHTML =
+          `<div class="text-xs font-bold text-blue-700 mb-1.5">🤖 Agent 综合研判</div>` +
+          `<div class="text-xs leading-relaxed text-gray-800">${this._md(String(rpt.agent_review))}</div>`;
+        sbox.appendChild(card);
+      }
       this._setViewMode('structured');
       // 从报告中提取评分和信号
       const score  = rpt?.summary?.score  ?? rpt?.score  ?? null;

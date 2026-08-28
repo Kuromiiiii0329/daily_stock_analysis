@@ -1,0 +1,45 @@
+{
+  "trade_date": "2026-08-27",
+  "notes": {
+    "ma_system": {
+      "stance": "bearish",
+      "reason": "MA5<MA10<MA20空排，价低于多条均线",
+      "impact": "上方13.93/15.24压力，反弹受限"
+    },
+    "macd": {
+      "stance": "bearish",
+      "reason": "DIF=-0.1146低于DEA=0.1207，柱=-0.4706",
+      "impact": "空头动能占优，短线仍承压"
+    },
+    "rsi": {
+      "stance": "neutral",
+      "reason": "RSI12为27.2超卖，RSI6/24未共振",
+      "impact": "短线或有修复，但方向信号不强"
+    },
+    "kdj": {
+      "stance": "bearish",
+      "reason": "K=14.8低于D=15.4，未现金叉",
+      "impact": "短线仍偏弱，超卖仅提示反弹可能"
+    },
+    "bollinger": {
+      "stance": "bearish",
+      "reason": "价格位于下半区，位置仅22%，评分42偏弱",
+      "impact": "短线承压，需收复中轨14.71才转稳"
+    },
+    "overbought": {
+      "stance": "neutral",
+      "reason": "RSI6=43、KDJ_J=14中性，仅WR=-84超卖",
+      "impact": "缺少多指标共振，短线方向指引有限"
+    },
+    "divergence": {
+      "stance": "neutral",
+      "reason": "评分50，signals为空，未现顶/底背离",
+      "impact": "缺少反转信号，对后市指引有限"
+    },
+    "volume": {
+      "stance": "bullish",
+      "reason": "量比1.27属正常，股价上涨3.12%",
+      "impact": "温和量价配合，短线偏多但力度一般"
+    }
+  }
+}

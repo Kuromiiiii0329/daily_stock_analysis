@@ -169,6 +169,7 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
     sig = SIGNAL_CFG.get(signal, SIGNAL_CFG["hold"])
     date_disp = _now_cn().strftime("%Y-%m-%d %H:%M")
     conclusion = _esc(report.get("conclusion", ""))
+    agent_review_html = _md_to_html(report.get("agent_review", "")) if report.get("agent_review") else ""
 
     dims = report.get("dimensions", [])
     tech_dims  = [d for d in dims if d.get("dimension") == "technical"]
@@ -239,6 +240,7 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
         </div>
       </div>
       {'<div class="concl">🎯 <b>综合结论</b>：' + conclusion + '</div>' if conclusion else ''}
+      {'<div class="concl" style="border-left-color:#3b82f6;background:#eff6ff">🤖 <b>Agent 综合研判</b><div style="margin-top:6px">' + agent_review_html + '</div></div>' if agent_review_html else ''}
       <div class="grid2">
         <div class="card"><div class="small" style="margin-bottom:6px">📡 维度评分雷达</div><div id="radar" class="chart" style="height:260px"></div></div>
         <div class="card"><div class="small" style="margin-bottom:6px">📈 K线走势（近90日）</div><div id="kline" class="chart" style="height:260px"></div></div>

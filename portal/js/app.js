@@ -6,6 +6,7 @@ import { WatchlistTab } from './tabs/watchlist.js';
 import { SettingsTab }  from './tabs/settings.js';
 import { RunTab }       from './tabs/run.js';
 import { GuideTab }     from './tabs/guide.js';
+import { ChatTab }      from './tabs/chat.js';
 import { toast }        from './components/toast.js';
 import { modal }        from './components/modal.js';
 
@@ -13,6 +14,7 @@ const SERVER = 'http://127.0.0.1:7788';
 
 const TABS = [
   { id: 'run',       icon: '▶',  label: '立即运行', Cls: RunTab },
+  { id: 'chat',      icon: '🤖', label: 'AI 对话',  Cls: ChatTab },
   { id: 'watchlist', icon: '☰',  label: '选股',     Cls: WatchlistTab },
   { id: 'settings',  icon: '⚙', label: '设置',     Cls: SettingsTab },
   { id: 'guide',     icon: '?',  label: '说明',     Cls: GuideTab },
@@ -86,8 +88,9 @@ class App {
       if (ok !== this._online) {
         this._online = ok;
         this._updateStatusUI(ok);
-        // 通知 RunTab
+        // 通知 RunTab / ChatTab
         this._instances['run']?.setServerStatus?.(ok);
+        this._instances['chat']?.setServerStatus?.(ok);
       }
     };
     await check();

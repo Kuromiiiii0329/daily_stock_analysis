@@ -229,6 +229,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_run(payload)
         elif path == "/analyze":
             self._handle_analyze(payload)
+        elif path == "/chat":
+            self._handle_chat(payload)
         elif path == "/market_review":
             self._handle_market_review(payload)
         elif path == "/env":
@@ -398,6 +400,7 @@ class Handler(BaseHTTPRequestHandler):
         modules_map = payload.get("modules", {})
         llm_mode    = payload.get("llm_mode", "batch")       # batch | per_indicator
         open_report = payload.get("open_report", True)
+        agent_review = bool(payload.get("agent_review", False))  # 🤖 Agent 综合研判（选项B）
 
         task_id = uuid.uuid4().hex[:12]
         with _tasks_lock:
@@ -415,12 +418,52 @@ class Handler(BaseHTTPRequestHandler):
 
         thread = threading.Thread(
             target=_run_deep_analysis_task,
-            args=(task_id, stock_code, stock_name, dimensions, modules_map, llm_mode, open_report),
+            args=(task_id, stock_code, stock_name, dimensions, modules_map, llm_mode, open_report, agent_review),
             daemon=True,
         )
         thread.start()
         logger.info("深度分析任务 %s 已启动: %s (%s)", task_id, stock_name, stock_code)
         self._send_json(200, {"ok": True, "task_id": task_id})
+
+    def _handle_chat(self, payload: dict):
+        """POST /chat — 交互式 AI 对话（选项A：走 AgentOrchestrator 四子 agent 多轮）。
+
+        payload:
+          message:     str   用户提问（必填）
+          session_id:  str   前端生成并持久化（localStorage），用于多轮上下文
+          stock_code:  str   可选，带上则注入股票上下文
+          stock_name:  str   可选
+        """
+        message = (payload.get("message") or "").strip()
+        if not message:
+            self._send_json(400, {"ok": False, "error": "message 不能为空"})
+            return
+
+        session_id = (payload.get("session_id") or "").strip() or ("sess_" + uuid.uuid4().hex[:12])
+        stock_code = (payload.get("stock_code") or "").strip().upper()
+        stock_name = payload.get("stock_name", stock_code)
+
+        task_id = uuid.uuid4().hex[:12]
+        with _tasks_lock:
+            _tasks[task_id] = {
+                "status":      "pending",
+                "logs":        [],
+                "report":      "",
+                "report_type": "chat",
+                "pid":         None,
+                "created_at":  datetime.now(TZ_CN).isoformat(),
+                "session_id":  session_id,
+                "task_kind":   "chat",
+            }
+
+        thread = threading.Thread(
+            target=_run_chat_task,
+            args=(task_id, message, session_id, stock_code, stock_name),
+            daemon=True,
+        )
+        thread.start()
+        logger.info("AI 对话任务 %s 已启动: session=%s", task_id, session_id)
+        self._send_json(200, {"ok": True, "task_id": task_id, "session_id": session_id})
 
     def _handle_market_review(self, payload: dict):
         """POST /market_review — 大盘复盘（上证+创业板），生成一份 HTML 并打开。"""
@@ -696,6 +739,7 @@ def _run_deep_analysis_task(
     modules_map: dict,
     llm_mode: str = "batch",
     open_report: bool = True,
+    agent_review: bool = False,
 ):
     """在后台线程中运行双维度深度分析。"""
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -854,6 +898,23 @@ def _run_deep_analysis_task(
             logger.warning("逐指标点评失败: %s", e)
             final_report["llm_notes"] = {}
 
+        # ── 🤖 Agent 综合研判（选项B：单次 LLM 复用已算数据，零重复取数）──
+        if agent_review:
+            try:
+                log("🤖 Agent 综合研判：基于已算好的全部指标做深度研判...")
+                summary_text = _summarize_report_for_agent(final_report)
+                if llm_call:
+                    review_text = llm_call(build_review_prompt(stock_name, stock_code, summary_text)).strip()
+                    final_report["agent_review"] = review_text
+                    log(f"✅ Agent 综合研判完成（{len(review_text)} 字）")
+                else:
+                    final_report["agent_review"] = ""
+                    log("⚠️ 未配置 LLM，跳过 Agent 综合研判")
+            except Exception as e:
+                logger.warning("Agent 综合研判失败: %s", e)
+                log(f"⚠️ Agent 综合研判失败：{e}")
+                final_report["agent_review"] = ""
+
         # ── 生成独立 HTML 报告 + 自动打开 ─────────────────────
         html_path = None
         try:
@@ -881,6 +942,81 @@ def _run_deep_analysis_task(
         logs.append(f"[{datetime.now(TZ_CN).strftime('%H:%M:%S')}] ❌ 分析失败：{e}")
         with _tasks_lock:
             _tasks[task_id]["status"] = "error"
+            _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
+
+
+def _run_chat_task(task_id: str, message: str, session_id: str,
+                   stock_code: str = "", stock_name: str = ""):
+    """后台线程：交互式 AI 对话（选项A）→ AgentOrchestrator.chat 多轮。
+
+    进度经 progress_callback 转成日志行走现有 SSE（/run/stream/<task_id>）。
+    最终答案（result.content）存入 _tasks[task_id]["report"]，report_type="chat"。
+    """
+    sys.path.insert(0, str(LIB_DIR))
+    sys.path.insert(0, str(PROJECT_ROOT))
+    logs = _tasks[task_id]["logs"]
+
+    def log(msg):
+        ts = datetime.now(TZ_CN).strftime("%H:%M:%S")
+        logs.append(f"[{ts}] {msg}")
+        logger.info("[chat %s] %s", task_id, msg)
+
+    with _tasks_lock:
+        _tasks[task_id]["status"] = "running"
+        _tasks[task_id]["started_at"] = datetime.now(TZ_CN).isoformat()
+
+    try:
+        log(f"💬 收到提问：{message[:60]}")
+        _load_dotenv()
+        _apply_agent_env()
+
+        from src.config import get_config
+        from src.agent.factory import build_agent_executor
+
+        log("🤖 构建 multi-agent 编排器（Technical→Intel→Decision）...")
+        executor = build_agent_executor(get_config())
+
+        def progress_cb(ev):
+            try:
+                t = (ev or {}).get("type")
+                if t == "stage_start":
+                    log(f"🔹 {ev.get('stage')} 开始…")
+                elif t == "stage_done":
+                    dur = ev.get("duration")
+                    dur_s = f"{dur:.1f}s" if isinstance(dur, (int, float)) else ""
+                    log(f"✅ {ev.get('stage')} 完成（{ev.get('status', '')} {dur_s}）")
+                elif t == "pipeline_timeout":
+                    log(f"⏱ {ev.get('stage')} 超时（{ev.get('elapsed')}s/{ev.get('timeout')}s）")
+            except Exception:
+                pass
+
+        ctx = {"stock_code": stock_code, "stock_name": stock_name} if stock_code else None
+        result = executor.chat(
+            message=message,
+            session_id=session_id,
+            progress_callback=progress_cb,
+            context=ctx,
+        )
+
+        content = getattr(result, "content", "") or ""
+        success = getattr(result, "success", True)
+        with _tasks_lock:
+            _tasks[task_id]["report"] = content
+            _tasks[task_id]["report_type"] = "chat"
+            _tasks[task_id]["status"] = "done" if success else "error"
+            _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
+        if success:
+            log(f"✅ 回答完成（{len(content)} 字）")
+        else:
+            err = getattr(result, "error", "") or "未知错误"
+            log(f"⚠️ 回答异常：{err}")
+
+    except Exception as e:
+        logger.exception("Chat task %s failed: %s", task_id, e)
+        logs.append(f"[{datetime.now(TZ_CN).strftime('%H:%M:%S')}] ❌ 对话失败：{e}")
+        with _tasks_lock:
+            _tasks[task_id]["status"] = "error"
+            _tasks[task_id]["report"] = f"[对话失败] {e}"
             _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
 
 
@@ -1030,6 +1166,96 @@ def _make_llm_caller(log):
     except Exception as e:
         log(f"⚠️  LLM 初始化失败：{e}")
         return None
+
+
+def _apply_agent_env():
+    """把 portal 现有的 HAI_* 网关配置映射为 agent 框架（get_config）认识的 OPENAI_*，
+    并设定 multi-agent 编排默认参数。用 setdefault，不覆盖用户显式设置。
+
+    必须在构建 agent（build_agent_executor）之前调用。
+    """
+    hai_key = os.environ.get("HAI_API_KEY")
+    hai_base = os.environ.get("HAI_BASE_URL")
+    if hai_key and hai_base:
+        os.environ.setdefault("OPENAI_API_KEY", hai_key)
+        os.environ.setdefault("OPENAI_BASE_URL", hai_base)
+        _m = os.environ.get("HAI_MODEL", "gpt-4.1")
+        os.environ.setdefault("LITELLM_MODEL", f"openai/{_m}")
+    os.environ.setdefault("AGENT_ARCH", "multi")                  # multi → AgentOrchestrator
+    os.environ.setdefault("AGENT_ORCHESTRATOR_MODE", "standard")  # technical→intel→decision
+    os.environ.setdefault("AGENT_MAX_STEPS", "10")
+
+
+def _summarize_report_for_agent(final_report: dict) -> str:
+    """把已算好的 final_report 抽取成一段结构化中文摘要，供 Agent 综合研判（选项B）。
+
+    只喂"已算好的结论与数据"，不让 LLM 重新取数。
+    """
+    lines = []
+    name = final_report.get("stock_name", "")
+    code = final_report.get("stock_code", "")
+    lines.append(f"标的：{name}（{code}）")
+    lines.append(
+        f"系统加权综合评分：{final_report.get('overall_score', '?')}/100，"
+        f"综合信号：{final_report.get('overall_signal_label', final_report.get('overall_signal', '?'))}"
+    )
+
+    for dim in final_report.get("dimensions", []):
+        if not isinstance(dim, dict):
+            continue
+        dname = dim.get("name") or dim.get("dimension", "")
+        if dim.get("error"):
+            lines.append(f"\n### {dname}（分析失败：{dim.get('error')}）")
+            continue
+        lines.append(
+            f"\n### {dname}（维度评分 {dim.get('score', '?')}/100，信号：{dim.get('signal', '?')}）"
+        )
+        for sec in dim.get("sections", []):
+            if not isinstance(sec, dict):
+                continue
+            title = sec.get("title", "")
+            content = (sec.get("content") or "").strip()
+            first_line = content.split("\n")[0].replace("**", "") if content else ""
+            sig = sec.get("signal", "")
+            score = sec.get("score", "")
+            lines.append(f"- {title}（{sig}/{score}）：{first_line}")
+
+    notes = final_report.get("llm_notes") or {}
+    if isinstance(notes, dict) and notes:
+        lines.append("\n### 逐指标点评（偏多/偏空）")
+        for key, note in notes.items():
+            if isinstance(note, dict):
+                lines.append(f"- {key}：{note.get('stance', '')} — {note.get('reason', '')}")
+
+    kline = final_report.get("kline_data") or []
+    if isinstance(kline, list) and kline:
+        lines.append("\n### 最近K线（date/close/ma5/ma20）")
+        for r in kline[-5:]:
+            if isinstance(r, dict):
+                lines.append(
+                    f"- {r.get('date')}: close={r.get('close')} ma5={r.get('ma5')} ma20={r.get('ma20')}"
+                )
+
+    return "\n".join(lines)
+
+
+def build_review_prompt(stock_name: str, stock_code: str, summary_text: str) -> str:
+    """构造 Agent 综合研判 prompt（选项B）。数据全在 prompt 里，LLM 只做综合，不取数。"""
+    return f"""你是一位严谨、务实的 A 股资深投研分析师。以下是系统已完成的量化分析结论与数据，\
+请**基于这些【已算好的】结果**做综合研判，**不要重复取数、不要臆造未提供的数据**。
+
+标的：{stock_name}（{stock_code}）
+
+系统量化分析结论与数据：
+{summary_text}
+
+请严格按以下结构输出（总计 250-400 字，客观中立、数据驱动、拒绝套话）：
+1. **核心判断**：一句话定性（强势/偏多/震荡/偏空/弱势），必须引用上面 2-3 个最关键的具体指标数值作为依据。
+2. **多空依据**：分别列「看多理由」「看空理由」各 1-2 条，引用具体指标，客观呈现分歧。
+3. **操作建议**：明确可执行——观望还是参与、关注/买入价位区间或触发条件、止损参考位、仓位建议（轻仓/半仓等）。
+4. **风险提示**：一句话点明当前最需警惕的风险。
+
+直接输出研判，用自然段落 + 关键处加粗，不要加大标题。"""
 
 
 def _make_search_fn(log):
