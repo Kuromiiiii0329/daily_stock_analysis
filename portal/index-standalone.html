@@ -1055,11 +1055,11 @@ class SettingsTab {
               <option value="full">完整</option>
             </select>`, '影响邮件内容详细程度')}
 
-          ${this._row('逐指标 LLM 点评', `
+          ${this._row('技术指标 LLM 打分', `
             <select id="cfg-llm-mode" class="form-select w-48">
-              <option value="batch">批量一次（快，推荐）</option>
-              <option value="per_indicator">逐指标详细（慢，更深入）</option>
-            </select>`, 'HTML报告对每个技术指标做偏多/偏空点评')}
+              <option value="batch">批量打分（打包一次，快，推荐）</option>
+              <option value="per_indicator">逐指标打分（单独调用，慢，更精细）</option>
+            </select>`, '技术面每个指标由 LLM 基于真实数值打分(0-100)并给出信号与说明')}
 
           ${this._row('分析后自动打开报告', `
             <div class="flex items-center gap-3">

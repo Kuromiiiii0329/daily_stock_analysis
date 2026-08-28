@@ -731,6 +731,48 @@ def _json_default(o):
     return str(o)
 
 
+def _recompute_tech_dimension(tech_result, llm_call, log=None):
+    """LLM 打分回写各 Section 后，重算技术面维度综合分与综合信号。
+
+    - 维度综合分：各指标 LLM 分的均值（排除占位 50）。
+    - 维度综合信号：交给 LLM 基于全部指标做一次总结性判断（零硬编码）。
+      LLM 不可用/失败时降级为 hold（不做 score→signal 硬编码推导）。
+    """
+    def _log(m):
+        if log: log(m)
+
+    sections = [s for s in tech_result.sections if s is not None]
+    scored = [s for s in sections if s.score != 50]
+    tech_result.score = int(sum(s.score for s in scored) / len(scored)) if scored else 50
+
+    # 维度综合信号交给 LLM
+    tech_result.signal = "hold"
+    if not llm_call or not sections:
+        return
+    try:
+        import json as _json
+        brief = "；".join(
+            f"{s.title}(评分{s.score},{s.signal})" for s in sections
+        )
+        prompt = (
+            f"你是A股技术分析师。下面是某股票技术面各指标的 LLM 评分与信号汇总：\n{brief}\n\n"
+            f"技术面综合评分为 {tech_result.score}/100。请你综合全部指标，给出技术面维度的**综合信号**。\n"
+            f"只返回严格 JSON（不要解释、不要markdown围栏）："
+            f'{{"signal":"buy或watch或hold或sell"}}'
+        )
+        resp = (llm_call(prompt) or "").strip()
+        obj = _json.loads(resp[resp.find("{"): resp.rfind("}") + 1]) if "{" in resp else {}
+        sig = str(obj.get("signal", "hold")).strip().lower()
+        if sig not in ("buy", "watch", "hold", "sell"):
+            cn = {"买入": "buy", "关注": "watch", "观望": "watch",
+                  "持有": "hold", "减仓": "hold", "卖出": "sell"}
+            sig = cn.get(str(obj.get("signal", "")).strip(), "hold")
+        tech_result.signal = sig
+        _log(f"🧭 技术面维度综合信号（LLM）：{sig}")
+    except Exception as e:
+        logger.warning("技术面维度综合信号 LLM 判断失败: %s", e)
+
+
 def _run_deep_analysis_task(
     task_id: str,
     stock_code: str,
@@ -804,10 +846,34 @@ def _run_deep_analysis_task(
                 log(f"❌ [{analyzer.name}] 执行失败：{e}")
                 logger.exception("Analyzer %s failed for %s", dim, stock_code)
 
+        # ── 技术面逐指标 LLM 打分（零硬编码：score+signal 全由 LLM 出）──
+        #    必须在 merge 之前回写 Section，merge 才能用 LLM 分聚合综合分。
+        tech_llm_notes = {}
+        try:
+            from portal.llm_notes import score_sections
+            from portal.data_cache import _last_trading_date
+            trade_date = _last_trading_date()
+            tech_result = next((r for r in results if r.dimension == "technical"), None)
+            if tech_result and tech_result.sections:
+                scores = score_sections(stock_code, stock_name, trade_date,
+                                        tech_result.sections, llm_call, mode=llm_mode, log=log)
+                # 回写到 Section 对象（网页端/HTML 两端同源，自动显示 LLM 分）
+                for s in tech_result.sections:
+                    if s.key in scores:
+                        s.score = scores[s.key]["score"]
+                        s.signal = scores[s.key]["signal"]
+                tech_llm_notes = scores
+                # 重算技术面维度综合分 + 维度综合信号（信号交给 LLM 做总结判断）
+                _recompute_tech_dimension(tech_result, llm_call, log)
+        except Exception as e:
+            logger.warning("技术面 LLM 打分失败: %s", e)
+            log(f"⚠️ 技术面 LLM 打分失败：{e}")
+
         # ── 合并报告 ──────────────────────────────────────────
         log("📝 合并各维度结果...")
         from portal.analyzers.merger import merge_results
         final_report = merge_results(stock_code, stock_name, results, llm_call)
+        final_report["llm_notes"] = tech_llm_notes
         log(f"🎯 综合评分={final_report['overall_score']}，信号={final_report['overall_signal_label']}")
 
         # ── 注入 K线数据（最近60条 date/close/ma5/ma20）────────
@@ -883,20 +949,7 @@ def _run_deep_analysis_task(
         except Exception as e:
             logger.warning("保存 meta 失败: %s", e)
 
-        # ── 逐指标 LLM 点评（双模式 + 交易日缓存）────────────
-        try:
-            from portal.llm_notes import generate_notes
-            from portal.data_cache import _last_trading_date
-            trade_date = _last_trading_date()
-            tech_sections = [s for dim in final_report.get("dimensions", [])
-                             if dim.get("dimension") == "technical"
-                             for s in dim.get("sections", [])]
-            notes = generate_notes(stock_code, stock_name, trade_date,
-                                   tech_sections, llm_call, mode=llm_mode, log=log)
-            final_report["llm_notes"] = notes
-        except Exception as e:
-            logger.warning("逐指标点评失败: %s", e)
-            final_report["llm_notes"] = {}
+        # 注：技术面逐指标 LLM 打分已在 merge 之前完成并回写（见上），此处不再重复。
 
         # ── 🤖 Agent 综合研判（选项B：单次 LLM 复用已算数据，零重复取数）──
         if agent_review:

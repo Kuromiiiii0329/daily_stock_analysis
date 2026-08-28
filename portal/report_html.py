@@ -136,19 +136,22 @@ def _dim_icon(dim: str) -> str:
 
 
 def _render_sections_html(sections: list, llm_notes: dict) -> str:
-    """渲染一组 section 卡片（含 LLM 点评块）。"""
+    """渲染一组 section 卡片（含 LLM 打分说明块）。"""
     parts = []
     for s in sections:
         sig = SIGNAL_CFG.get(s.get("signal", "hold"), SIGNAL_CFG["hold"])
         note_html = ""
         note = (llm_notes or {}).get(s.get("key"))
         if note and isinstance(note, dict):
-            st = STANCE_CFG.get(note.get("stance", "neutral"), STANCE_CFG["neutral"])
+            nsig = SIGNAL_CFG.get(note.get("signal", "hold"), SIGNAL_CFG["hold"])
+            nscore = note.get("score", "")
             reason = _esc(note.get("reason", ""))
             impact = _esc(note.get("impact", ""))
             note_html = (
-                f'<div class="note" style="border-color:{st["color"]};background:{st["bg"]}">'
-                f'🤖 <b style="color:{st["color"]}">{st["label"]}</b> — {reason}'
+                f'<div class="note" style="border-color:{nsig["dot"]};background:{nsig["bg"]}">'
+                f'🤖 <b style="color:{nsig["text"]}">{nsig["label"]}'
+                + (f' · {nscore}' if nscore != "" else '') + '</b>'
+                + (f' — {reason}' if reason else '')
                 + (f'（影响：{impact}）' if impact else '') + '</div>'
             )
         parts.append(
@@ -172,8 +175,12 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
     agent_review_html = _md_to_html(report.get("agent_review", "")) if report.get("agent_review") else ""
 
     dims = report.get("dimensions", [])
-    tech_dims  = [d for d in dims if d.get("dimension") == "technical"]
-    other_dims = [d for d in dims if d.get("dimension") != "technical"]
+    # 按 技术面 → 基本面 → 产业链 顺序单列排列（与网页端维度顺序一致）
+    _order = ["technical", "fundamental", "industry"]
+    ordered_dims = (
+        [d for k in _order for d in dims if d.get("dimension") == k]
+        + [d for d in dims if d.get("dimension") not in _order]
+    )
 
     def _dim_block(d):
         dsig = SIGNAL_CFG.get(d.get("signal", "hold"), SIGNAL_CFG["hold"])
@@ -186,8 +193,7 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
             f'{summ}{secs}</div>'
         )
 
-    left_col  = "".join(_dim_block(d) for d in tech_dims)
-    right_col = "".join(_dim_block(d) for d in other_dims)
+    all_blocks = "".join(_dim_block(d) for d in ordered_dims)
 
     kline = report.get("kline_data", []) or []
     radar_scores = {d.get("dimension"): d.get("score", 0) for d in dims}
@@ -245,10 +251,7 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
         <div class="card"><div class="small" style="margin-bottom:6px">📡 维度评分雷达</div><div id="radar" class="chart" style="height:260px"></div></div>
         <div class="card"><div class="small" style="margin-bottom:6px">📈 K线走势（近90日）</div><div id="kline" class="chart" style="height:260px"></div></div>
       </div>
-      <div class="grid2">
-        <div>{left_col}</div>
-        <div>{right_col}</div>
-      </div>
+      <div>{all_blocks}</div>
       <div class="foot">本报告由本地量化系统自动生成，仅供研究参考，不构成投资建议。生成时间 {date_disp}</div>
     </div>
     """

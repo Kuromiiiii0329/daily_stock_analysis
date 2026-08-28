@@ -1,14 +1,19 @@
 """
-portal/llm_notes.py — 逐指标 LLM 点评（偏多/偏空/影响）+ 交易日缓存
+portal/llm_notes.py — 技术指标 LLM 打分（score + signal + 说明）+ 交易日缓存
 
-双模式：
+设计原则：**零硬编码打分**。代码只算指标的客观数值事实（存于 Section.data），
+把这些事实喂给 LLM，由 LLM 直接给出 score(0-100)、signal(buy/watch/hold/sell)、
+依据(reason)、影响(impact)。代码不做任何评级判断，不从 score 推导 signal。
+
+双模式（由前端 setting「技术指标 LLM 打分」的 llm_mode 决定）：
   - batch:         所有指标打包一次调 LLM（快，默认）
-  - per_indicator: 每个指标单独调 LLM（详细，慢）
+  - per_indicator: 每个指标单独调 LLM（慢，更精细）
 
 缓存：portal/data/stocks/{code}/llm_notes/{trade_date}.json
   同股票+同指标+同交易日不重复调 LLM，天然复用。
 
-输出结构（每个 section）：{"stance": bullish|bearish|neutral, "reason": "...", "impact": "..."}
+输出结构（每个 section）：
+  {"score": int(0-100), "signal": "buy|watch|hold|sell", "reason": "...", "impact": "..."}
 """
 from __future__ import annotations
 
@@ -20,11 +25,14 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# 只点评"数值型技术指标"，跳过本身就是 LLM 文本的段（避免重复调用）
+# 只对"数值型技术指标"打分，跳过本身就是 LLM 文本、已自打分的段
+# （pattern/wave/chan/llm_tech 在 technical.py 内部自己调 LLM 出 score+signal）
 NOTE_KEYS = {
     "ma_system", "macd", "rsi", "kdj", "bollinger", "overbought",
     "divergence", "volume", "chip", "turnover", "margin", "ma250",
 }
+
+VALID_SIGNALS = ("buy", "watch", "hold", "sell")
 
 
 def _notes_dir(code: str) -> Path:
@@ -75,105 +83,154 @@ def _parse_json(text: str) -> Optional[dict]:
     return None
 
 
-def _norm_note(obj) -> dict:
-    """规范化单条点评为 {stance, reason, impact}，非法降级 neutral。"""
+def _norm_score(obj) -> dict:
+    """规范化单条打分为 {score, signal, reason, impact}。
+
+    零硬编码原则：signal 由 LLM 直接给，非法时降级 hold（**不从 score 推导**）。
+    """
     if not isinstance(obj, dict):
-        return {"stance": "neutral", "reason": str(obj)[:40], "impact": ""}
-    stance = str(obj.get("stance", "neutral")).lower()
-    if stance not in ("bullish", "bearish", "neutral"):
-        # 兼容中文
-        m = {"偏多": "bullish", "看多": "bullish", "偏空": "bearish", "看空": "bearish", "中性": "neutral"}
-        stance = m.get(obj.get("stance", ""), "neutral")
+        return {"score": 50, "signal": "hold", "reason": str(obj)[:40], "impact": ""}
+
+    # score：转 int，clamp [0,100]，非法 → 50
+    try:
+        score = int(round(float(obj.get("score", 50))))
+    except Exception:
+        score = 50
+    score = max(0, min(100, score))
+
+    # signal：白名单 + 中文兼容；非法直接降级 hold（禁止从 score 推导）
+    raw_sig = str(obj.get("signal", "")).strip().lower()
+    if raw_sig not in VALID_SIGNALS:
+        cn_map = {
+            "买入": "buy", "看多": "buy", "偏多": "buy",
+            "关注": "watch", "观望": "watch",
+            "持有": "hold", "减仓": "hold", "中性": "hold",
+            "卖出": "sell", "看空": "sell", "偏空": "sell",
+        }
+        raw_sig = cn_map.get(str(obj.get("signal", "")).strip(), "")
+    signal = raw_sig if raw_sig in VALID_SIGNALS else "hold"
+
     return {
-        "stance": stance,
+        "score": score,
+        "signal": signal,
         "reason": str(obj.get("reason", ""))[:60],
         "impact": str(obj.get("impact", ""))[:60],
     }
 
 
 def _section_brief(s: dict) -> str:
-    """指标数据摘要（喂给 LLM）。"""
+    """指标客观数据摘要（喂给 LLM）。不含评分（代码不再算分，避免误导 LLM）。"""
     content = (s.get("content") or "").replace("\n", " ")[:200]
     data = s.get("data") or {}
     # data 可能含 numpy bool/int/float，default=str 兜底
     data_str = json.dumps(data, ensure_ascii=False, default=str)[:200] if data else ""
-    return f"【{s.get('title')}】(评分{s.get('score',50)}) {content} 数据:{data_str}"
+    return f"【{s.get('title')}】{content} 数据:{data_str}"
 
 
 def _build_single_prompt(stock_name: str, s: dict) -> str:
-    return f"""你是A股技术分析师。请点评 {stock_name} 的以下单项技术指标，判断它当前对股价是偏多、偏空还是中性。
+    return f"""你是A股技术分析师。下面是 {stock_name} 某个技术指标的**客观数值（由系统计算，不可篡改）**。请你**基于这些真实数值**给出评分与信号。
 
 {_section_brief(s)}
 
+评分标准：score 为 0-100 整数，越高越偏多（>65 偏多、35-65 中性震荡、<35 偏空）。
+信号 signal 只能是：buy（买入）/ watch（关注）/ hold（持有）/ sell（卖出）。
+
 只返回严格 JSON（不要任何解释文字、不要markdown围栏）：
-{{"stance":"bullish或bearish或neutral","reason":"判断依据，引用具体数值，≤40字","impact":"对后市的影响，≤40字"}}"""
+{{"score":整数0到100,"signal":"buy或watch或hold或sell","reason":"评分依据，引用具体数值，≤40字","impact":"对后市影响，≤40字"}}"""
 
 
 def _build_batch_prompt(stock_name: str, sections: list) -> str:
     items = "\n".join(f"[{s.get('key')}] {_section_brief(s)}" for s in sections)
     keys = ", ".join(f'"{s.get("key")}"' for s in sections)
-    return f"""你是A股技术分析师。请逐个点评 {stock_name} 的以下技术指标，每个判断偏多/偏空/中性。
+    first_key = sections[0].get("key") if sections else "key"
+    return f"""你是A股技术分析师。下面是 {stock_name} 的多个技术指标的**客观数值（由系统计算，不可篡改）**。请你**基于每个指标的真实数值**逐个给出评分与信号。
 
 {items}
 
-只返回严格 JSON 对象（不要解释、不要markdown围栏），键为指标标识，值为点评：
-{{{keys and (keys.split(",")[0].strip() + ':{"stance":"bullish或bearish或neutral","reason":"依据,引用数值,≤40字","impact":"影响,≤40字"}, ...其余指标同理')}}}
+评分标准：score 为 0-100 整数，越高越偏多（>65 偏多、35-65 中性震荡、<35 偏空）。
+信号 signal 只能是：buy / watch / hold / sell。
+
+只返回严格 JSON 对象（不要解释、不要markdown围栏），键为指标标识，值为该指标的打分：
+{{"{first_key}":{{"score":整数0到100,"signal":"buy或watch或hold或sell","reason":"依据,引用数值,≤40字","impact":"影响,≤40字"}}, ...其余指标同理}}
 必须包含全部这些键：{keys}"""
 
 
-def generate_notes(code: str, stock_name: str, trade_date: str,
+def score_sections(code: str, stock_name: str, trade_date: str,
                    sections: list, llm_call, mode: str = "batch", log=None) -> dict:
-    """
-    对 sections 做逐指标点评，返回 {section_key: {stance, reason, impact}}。
-    带交易日缓存，只对未命中的指标调 LLM。
+    """对 sections（Section 对象或 dict）做逐指标 LLM 打分。
+
+    返回 {section_key: {score, signal, reason, impact}}。
+    带交易日缓存，只对未命中的指标调 LLM。调用方负责把 score/signal 回写到 Section。
     """
     def _log(m):
         if log: log(m)
 
-    # 只点评数值指标
-    target = [s for s in sections if s.get("key") in NOTE_KEYS and not s.get("error")]
+    def _get(s, k, default=None):
+        # 兼容 Section 对象与 dict
+        if isinstance(s, dict):
+            return s.get(k, default)
+        return getattr(s, k, default)
+
+    def _as_dict(s) -> dict:
+        if isinstance(s, dict):
+            return s
+        return {"key": _get(s, "key"), "title": _get(s, "title"),
+                "content": _get(s, "content"), "data": _get(s, "data") or {}}
+
+    # 只对数值指标打分，跳过已标记 error 的段
+    target = [s for s in sections if _get(s, "key") in NOTE_KEYS and not _get(s, "error")]
     if not target:
         return {}
 
     cached = _load_notes(code, trade_date)
-    todo = [s for s in target if s.get("key") not in cached]
+
+    def _cache_valid(key: str) -> bool:
+        # 旧格式（无 score/signal 字段）视为未命中，重新打分
+        note = cached.get(key)
+        return isinstance(note, dict) and "score" in note and "signal" in note
+
+    todo = [s for s in target if not _cache_valid(_get(s, "key"))]
 
     if not todo:
-        _log(f"📝 逐指标点评全部命中缓存（{len(cached)} 项）")
-        return {s.get("key"): cached[s.get("key")] for s in target if s.get("key") in cached}
+        _log(f"📝 逐指标打分全部命中缓存（{len(target)} 项）")
+        return {_get(s, "key"): cached[_get(s, "key")] for s in target}
 
     if not llm_call:
-        _log("⚠️ 未配置 LLM，跳过逐指标点评")
-        return {s.get("key"): cached.get(s.get("key"), {"stance": "neutral", "reason": "", "impact": ""})
+        _log("⚠️ 未配置 LLM，跳过逐指标打分")
+        return {_get(s, "key"): cached.get(_get(s, "key"), {"score": 50, "signal": "hold", "reason": "", "impact": ""})
                 for s in target}
 
-    result = dict(cached)
+    result = {k: v for k, v in cached.items() if _cache_valid(k)}
 
     if mode == "per_indicator":
-        _log(f"📝 逐指标详细点评：{len(todo)} 项待分析（缓存命中 {len(cached)}）")
+        _log(f"📝 逐指标打分（单独调用）：{len(todo)} 项待分析（缓存命中 {len(result)}）")
         for i, s in enumerate(todo, 1):
-            key = s.get("key")
-            _log(f"  🤖 点评 {i}/{len(todo)}：{s.get('title')}")
+            key = _get(s, "key")
+            _log(f"  🤖 打分 {i}/{len(todo)}：{_get(s, 'title')}")
             try:
-                resp = llm_call(_build_single_prompt(stock_name, s))
+                resp = llm_call(_build_single_prompt(stock_name, _as_dict(s)))
                 obj = _parse_json(resp)
-                result[key] = _norm_note(obj) if obj else {"stance": "neutral", "reason": (resp or "")[:40], "impact": ""}
+                result[key] = _norm_score(obj) if obj else {"score": 50, "signal": "hold", "reason": (resp or "")[:40], "impact": ""}
             except Exception as e:
-                logger.warning("[llm_notes] 单项点评失败 %s/%s: %s", code, key, e)
-                result[key] = {"stance": "neutral", "reason": "分析失败", "impact": ""}
+                logger.warning("[llm_notes] 单项打分失败 %s/%s: %s", code, key, e)
+                result[key] = {"score": 50, "signal": "hold", "reason": "分析失败", "impact": ""}
     else:  # batch
-        _log(f"📝 批量点评：{len(todo)} 项打包分析（缓存命中 {len(cached)}）")
+        _log(f"📝 批量打分（打包一次）：{len(todo)} 项分析（缓存命中 {len(result)}）")
         try:
-            resp = llm_call(_build_batch_prompt(stock_name, todo))
+            resp = llm_call(_build_batch_prompt(stock_name, [_as_dict(s) for s in todo]))
             obj = _parse_json(resp) or {}
             for s in todo:
-                key = s.get("key")
-                result[key] = _norm_note(obj.get(key)) if obj.get(key) else {"stance": "neutral", "reason": "", "impact": ""}
+                key = _get(s, "key")
+                result[key] = _norm_score(obj.get(key)) if obj.get(key) else {"score": 50, "signal": "hold", "reason": "", "impact": ""}
         except Exception as e:
-            logger.warning("[llm_notes] 批量点评失败 %s: %s", code, e)
+            logger.warning("[llm_notes] 批量打分失败 %s: %s", code, e)
             for s in todo:
-                result[s.get("key")] = {"stance": "neutral", "reason": "分析失败", "impact": ""}
+                result[_get(s, "key")] = {"score": 50, "signal": "hold", "reason": "分析失败", "impact": ""}
 
     _save_notes(code, trade_date, result)
     # 只返回本次 target 涉及的
-    return {s.get("key"): result[s.get("key")] for s in target if s.get("key") in result}
+    return {_get(s, "key"): result[_get(s, "key")] for s in target if _get(s, "key") in result}
+
+
+# 向后兼容别名（旧调用点）
+generate_notes = score_sections

@@ -92,16 +92,20 @@ class TechnicalAnalyzer(BaseAnalyzer):
             if "llm_tech" in modules and llm_call:
                 sections.append(self._analyze_llm_tech(df, stock_name, llm_call, sections))
 
+            # 过滤掉降级/无真实数据返回 None 的子模块（不出假情报）
+            sections = [s for s in sections if s is not None]
             result.sections = sections
 
-            # 综合评分：各子模块加权平均
+            # 注意：数值指标（ma/macd/rsi 等）的 score/signal 此处为占位（50/hold），
+            # 由外层 server.py 统一调 LLM 打分并回写；维度综合分/信号也在外层回写后重算。
+            # 这里先给一个临时聚合，保证 analyzer 单独运行（llm_call=None）时不为空。
             scored = [s for s in sections if s.score != 50]
             result.score = int(sum(s.score for s in scored) / len(scored)) if scored else 50
-            result.signal = self._score_to_signal(result.score)
+            result.signal = "hold"
 
             # 一句话摘要
-            ma_sec = next((s for s in sections if s.key == "ma_system"), None)
-            result.summary = ma_sec.content.split("\n")[0] if ma_sec else f"技术评分 {result.score}/100"
+            ma_sec = next((s for s in sections if s is not None and s.key == "ma_system"), None)
+            result.summary = ma_sec.content.split("\n")[0] if ma_sec else f"技术分析（{len(sections)}项）"
 
         except Exception as e:
             logger.exception("TechnicalAnalyzer error for %s: %s", stock_code, e)
@@ -227,31 +231,22 @@ class TechnicalAnalyzer(BaseAnalyzer):
         bias5  = (close - ma5)  / ma5  * 100 if ma5  else 0
         bias20 = (close - ma20) / ma20 * 100 if ma20 else 0
 
-        # 均线多空排列（短中期）
+        # 均线多空排列（短中期）— 仅客观描述形态，不打分（打分交给 LLM）
         alignment = ""
-        score = 50
         if all(v is not None for v in [ma5, ma10, ma20]):
             if ma5 > ma10 > ma20:
                 alignment = "多头排列（MA5>MA10>MA20）"
-                score = 75
             elif ma5 < ma10 < ma20:
                 alignment = "空头排列（MA5<MA10<MA20）"
-                score = 30
             else:
                 alignment = "均线缠绕（震荡）"
-                score = 50
 
-        # 价格与年线/120日线的位置加分/减分
+        # 价格与年线/120日线的位置（客观事实）
         above_ma250 = ma250 and close > ma250
         above_ma120 = ma120 and close > ma120
-        if above_ma250:
-            score = min(score + 8, 90)
-        elif ma250 and close < ma250:
-            score = max(score - 8, 15)
 
         if abs(bias5) > 8:
-            score = max(score - 10, 20)
-            bias_warn = f"  ⚠️ 乖离率偏大（{bias5:+.1f}%），追高风险高\n"
+            bias_warn = f"  ⚠️ 乖离率偏大（{bias5:+.1f}%）\n"
         else:
             bias_warn = ""
 
@@ -284,13 +279,13 @@ class TechnicalAnalyzer(BaseAnalyzer):
             + bias_warn
             + ("\n".join(f"- {l}" for l in pos_lines) + "\n" if pos_lines else "")
         )
-        signal = self._score_to_signal(score)
+        signal = "hold"
         return Section(key="ma_system", title="均线系统", content=content,
                        data={"ma5": ma5, "ma10": ma10, "ma20": ma20, "ma60": ma60,
                              "ma120": ma120, "ma250": ma250,
                              "close": close, "bias5": bias5,
                              "above_ma250": above_ma250, "above_ma120": above_ma120},
-                       score=score, signal=signal)
+                       score=50, signal=signal)
 
     def _analyze_macd(self, df) -> Section:
         last = df.iloc[-1]
@@ -298,15 +293,9 @@ class TechnicalAnalyzer(BaseAnalyzer):
         dif, dea, bar = last.get("dif", 0), last.get("dea", 0), last.get("macd_bar", 0)
         prev_bar = prev.get("macd_bar", 0)
 
-        # 金叉/死叉检测
+        # 金叉/死叉检测（客观事件，不打分）
         golden = prev.get("dif", 0) < prev.get("dea", 0) and dif > dea
         death  = prev.get("dif", 0) > prev.get("dea", 0) and dif < dea
-
-        score = 55 if dif > dea else 45
-        if golden: score = 72
-        if death:  score = 30
-        if dif > 0 and dea > 0: score = min(score + 5, 85)
-        if dif < 0 and dea < 0: score = max(score - 5, 20)
 
         cross = "🔴 死叉" if death else ("🟢 金叉" if golden else "")
         zero_pos = "零轴上方（多头区域）" if dif > 0 else "零轴下方（空头区域）"
@@ -319,33 +308,32 @@ class TechnicalAnalyzer(BaseAnalyzer):
         )
         return Section(key="macd", title="MACD指标", content=content,
                        data={"dif": dif, "dea": dea, "bar": bar, "golden": golden, "death": death},
-                       score=score, signal=self._score_to_signal(score))
+                       score=50, signal="hold")
 
     def _analyze_rsi(self, df) -> Section:
         last = df.iloc[-1]
         r6, r12, r24 = (last.get(f"rsi{n}", 50) for n in [6, 12, 24])
 
-        score = 50
-        status = "中性"
+        # 客观区间描述（不打分，打分交给 LLM）
         if r6 > 80:
-            status, score = "严重超买，短期回调风险高", 25
+            status = "严重超买区间（>80）"
         elif r6 > 70:
-            status, score = "超买区域，注意风险", 35
+            status = "超买区间（>70）"
         elif r6 < 20:
-            status, score = "严重超卖，可关注反弹", 75
+            status = "严重超卖区间（<20）"
         elif r6 < 30:
-            status, score = "超卖区域，具备反弹条件", 65
+            status = "超卖区间（<30）"
         else:
-            score = int(50 + (r6 - 50) * 0.3)
+            status = "中性区间"
 
         content = (
             f"**RSI(6)={r6:.1f}  RSI(12)={r12:.1f}  RSI(24)={r24:.1f}**\n"
-            f"- 状态：{status}\n"
-            f"- 参考区间：超买>70，超卖<30\n"
+            f"- 区间：{status}\n"
+            f"- 参考：超买>70，超卖<30\n"
         )
         return Section(key="rsi", title="RSI超买超卖", content=content,
                        data={"rsi6": r6, "rsi12": r12, "rsi24": r24},
-                       score=score, signal=self._score_to_signal(score))
+                       score=50, signal="hold")
 
     def _analyze_kdj(self, df) -> Section:
         last = df.iloc[-1]
@@ -355,14 +343,9 @@ class TechnicalAnalyzer(BaseAnalyzer):
 
         golden = pk < pd_ and k > d
         death  = pk > pd_ and k < d
-        score = 55 if k > d else 45
-        if golden: score = 70
-        if death:  score = 32
-        if j > 90: score = max(score - 15, 20)
-        if j < 10: score = min(score + 15, 80)
 
         cross = "🟢 金叉" if golden else ("🔴 死叉" if death else "")
-        overbought = " ⚠️ J值超买" if j > 90 else (" ✅ J值超卖反弹信号" if j < 10 else "")
+        overbought = " ⚠️ J值超买(>90)" if j > 90 else (" ✅ J值超卖(<10)" if j < 10 else "")
 
         content = (
             f"**K={k:.1f}  D={d:.1f}  J={j:.1f}** {cross}{overbought}\n"
@@ -370,7 +353,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
         )
         return Section(key="kdj", title="KDJ随机指标", content=content,
                        data={"k": k, "d": d, "j": j, "golden": golden, "death": death},
-                       score=score, signal=self._score_to_signal(score))
+                       score=50, signal="hold")
 
     def _analyze_bollinger(self, df) -> Section:
         last = df.iloc[-1]
@@ -381,23 +364,21 @@ class TechnicalAnalyzer(BaseAnalyzer):
         width = last.get("boll_width", 0)
 
         if upper is None or pd.isna(upper):
-            return Section(key="bollinger", title="布林带", content="数据不足，无法计算布林带",
-                           score=50, signal="hold")
+            return None  # 无真实布林带数据，不显示（不出假情报）
 
         pos_pct = (close - lower) / (upper - lower + 1e-9) * 100
 
-        score = 50
-        status = ""
+        # 客观位置描述（不打分，打分交给 LLM）
         if close > upper:
-            status, score = "价格突破上轨（超买/强势突破）", 35
+            status = "价格突破上轨"
         elif close < lower:
-            status, score = "价格跌破下轨（超卖/弱势）", 65
+            status = "价格跌破下轨"
         elif pos_pct > 75:
-            status, score = "价格在布林带上半区（偏强）", 60
+            status = "价格在布林带上半区"
         elif pos_pct < 25:
-            status, score = "价格在布林带下半区（偏弱）", 42
+            status = "价格在布林带下半区"
         else:
-            status, score = "价格在布林带中部（震荡）", 50
+            status = "价格在布林带中部"
 
         content = (
             f"**上轨={upper:.2f}  中轨={mid:.2f}  下轨={lower:.2f}**\n"
@@ -407,7 +388,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
         return Section(key="bollinger", title="布林带", content=content,
                        data={"upper": upper, "mid": mid, "lower": lower,
                              "width": width, "pos_pct": pos_pct},
-                       score=score, signal=self._score_to_signal(score))
+                       score=50, signal="hold")
 
     def _analyze_volume(self, df) -> Section:
         last = df.iloc[-1]
@@ -415,15 +396,15 @@ class TechnicalAnalyzer(BaseAnalyzer):
         vol_ratio = last.get("vol_ratio", 1.0)
         close_change = (last["close"] - prev["close"]) / prev["close"] * 100
 
-        score = 50
+        # 客观量价关系描述（不打分，打分交给 LLM）
         if vol_ratio > 2 and close_change > 0:
-            status, score = "放量上涨（强势信号）", 72
+            status = "放量上涨"
         elif vol_ratio > 2 and close_change < 0:
-            status, score = "放量下跌（做空信号）", 28
+            status = "放量下跌"
         elif vol_ratio < 0.5 and close_change > 0:
-            status, score = "缩量上涨（量能不足，谨慎）", 52
+            status = "缩量上涨"
         elif vol_ratio < 0.5 and close_change < 0:
-            status, score = "缩量回调（洗盘信号，可关注）", 60
+            status = "缩量回调"
         else:
             status = "量能正常"
 
@@ -434,7 +415,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
         )
         return Section(key="volume", title="量价关系", content=content,
                        data={"vol_ratio": vol_ratio, "close_change": close_change},
-                       score=score, signal=self._score_to_signal(score))
+                       score=50, signal="hold")
 
     def _analyze_pattern_llm(self, df, stock_name, llm_call) -> Section:
         tail20 = df.tail(20)
@@ -479,21 +460,17 @@ class TechnicalAnalyzer(BaseAnalyzer):
    - 入场条件：满足【具体价格或信号】时可考虑操作
    - 止损设置：XX价格以下止损（基于形态失效判断）
 
-输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
+输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{"score":整数0到100,"signal":"buy或watch或hold或sell"}
+（score 越高越偏多：>65偏多、35-65中性、<35偏空；signal 只能是 buy/watch/hold/sell）"""
         try:
             content = llm_call(prompt).strip()
             if not content:
                 content = "⚠️ LLM 未返回内容（可能受 token 上限或模型行为影响），请重试。"
         except Exception as e:
             content = f"K线形态分析失败：{e}"
-        # 提取信号
-        score, signal = 50, "hold"
-        signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
-                      "减仓": ("hold", 42), "卖出": ("sell", 28)}
-        for label, (sig, sc) in signal_map.items():
-            if f"【信号】{label}" in content:
-                signal, score = sig, sc
-                break
+        # 从 LLM 输出末尾解析 score+signal（打分完全交给 LLM）
+        score, signal = self._extract_llm_score(content)
+        content = self._strip_score_json(content)
         return Section(key="pattern", title="K线形态", content=content, score=score, signal=signal)
 
     def _analyze_wave_llm(self, df, stock_name, llm_call) -> Section:
@@ -551,20 +528,16 @@ class TechnicalAnalyzer(BaseAnalyzer):
    - 当前适合的操作策略（分批买/持有/减仓等）
    - 入场价位：XX附近，止损：XX，目标：XX
 
-输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
+输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{"score":整数0到100,"signal":"buy或watch或hold或sell"}
+（score 越高越偏多：>65偏多、35-65中性、<35偏空；signal 只能是 buy/watch/hold/sell）"""
         try:
             content = llm_call(prompt).strip()
             if not content:
                 content = "⚠️ LLM 未返回内容（可能受 token 上限或模型行为影响），请重试。"
         except Exception as e:
             content = f"波浪分析失败：{e}"
-        score, signal = 50, "hold"
-        signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
-                      "减仓": ("hold", 42), "卖出": ("sell", 28)}
-        for label, (sig, sc) in signal_map.items():
-            if f"【信号】{label}" in content:
-                signal, score = sig, sc
-                break
+        score, signal = self._extract_llm_score(content)
+        content = self._strip_score_json(content)
         return Section(key="wave", title="波浪理论", content=content, score=score, signal=signal)
 
     def _analyze_chan_llm(self, df, stock_name, llm_call) -> Section:
@@ -631,20 +604,16 @@ class TechnicalAnalyzer(BaseAnalyzer):
    - 参考止损位：XX（基于缠论笔段失效判断）
    - 目标位：XX ~ XX
 
-输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
+输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{"score":整数0到100,"signal":"buy或watch或hold或sell"}
+（score 越高越偏多：>65偏多、35-65中性、<35偏空；signal 只能是 buy/watch/hold/sell）"""
         try:
             content = llm_call(prompt).strip()
             if not content:
                 content = "⚠️ LLM 未返回内容（可能受 token 上限或模型行为影响），请重试。"
         except Exception as e:
             content = f"缠论分析失败：{e}"
-        score, signal = 50, "hold"
-        signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
-                      "减仓": ("hold", 42), "卖出": ("sell", 28)}
-        for label, (sig, sc) in signal_map.items():
-            if f"【信号】{label}" in content:
-                signal, score = sig, sc
-                break
+        score, signal = self._extract_llm_score(content)
+        content = self._strip_score_json(content)
         return Section(key="chan", title="缠论分析", content=content, score=score, signal=signal)
 
     def _analyze_chip(self, df: pd.DataFrame, stock_code: str) -> Section:
@@ -685,70 +654,41 @@ class TechnicalAnalyzer(BaseAnalyzer):
                 pressure  = round(cost_median * 1.05, 2)
 
                 profit_pct = profit_ratio * 100
-                if profit_pct > 70 and current_price >= cost_median:
-                    score, status = 65, "获利盘丰厚，上方压力较大但仍处强势"
-                elif profit_pct < 30:
-                    score, status = 70, "套牢盘少，反弹空间相对充裕"
-                else:
-                    score, status = 50, "筹码结构中性"
-
                 content = (
                     f"**获利盘比例={profit_pct:.1f}%**\n"
                     f"- 密集成本区中位数：{cost_median:.2f}\n"
                     f"- 估算支撑位：{support}  压力位：{pressure}\n"
-                    f"- 状态：{status}\n"
                 )
                 return Section(key="chip", title="筹码分布",
                                content=content,
                                data={"profit_ratio": profit_ratio, "cost_median": cost_median,
                                      "support": support, "pressure": pressure},
-                               score=score, signal=self._score_to_signal(score))
+                               score=50, signal="hold")
 
-            # akshare 返回空，降级到估算
+            # akshare 返回空，无真实筹码数据 → 不显示（不出假情报）
             raise ValueError("cyq data empty")
 
         except Exception:
-            # 降级：用近60日均价估算
-            tail = df.tail(60) if len(df) >= 60 else df
-            avg_cost = float(tail["close"].mean())
-            current_price = float(df.iloc[-1]["close"])
-            profit_est = float((tail["close"] < current_price).sum()) / max(len(tail), 1)
-            profit_pct = profit_est * 100
-            score = 65 if profit_pct > 70 else (70 if profit_pct < 30 else 50)
-            content = (
-                f"**获利盘估算={profit_pct:.1f}%**（基于近{len(tail)}日均价估算，非精确筹码）\n"
-                f"- 近期均价：{avg_cost:.2f}\n"
-                f"- 当前价格：{current_price:.2f}\n"
-            )
-            return Section(key="chip", title="筹码分布（估算）",
-                           content=content,
-                           data={"profit_ratio": profit_est, "avg_cost": avg_cost},
-                           score=score, signal=self._score_to_signal(score))
+            # 拿不到真实筹码数据，宁可不显示也不出估算假情报
+            return None
 
     def _analyze_turnover(self, df: pd.DataFrame) -> Section:
         """换手率趋势分析（近30日）"""
         try:
-            # 确定换手率列
+            # 确定换手率列（仅接受真实换手率或基于真实成交额的换算，不做凭空粗估）
             if "turnover_rate" in df.columns and not df["turnover_rate"].isna().all():
                 tr = df["turnover_rate"].copy()
             elif all(c in df.columns for c in ["amount", "close", "volume"]):
-                # amount 单位通常为元，volume 为股数，估算流通市值比
+                # amount 单位通常为元，volume 为股数，基于真实成交额估算换手比
                 tr = df["volume"] / (df["amount"] / df["close"].replace(0, np.nan) + 1e-9) * 100
-            elif "volume" in df.columns:
-                vol_mean = df["volume"].mean()
-                tr = df["volume"] / (vol_mean + 1e-9) * 2  # 粗估，仅供趋势
             else:
-                return Section(key="turnover", title="换手率趋势",
-                               content="缺少换手率及成交量数据，无法分析",
-                               score=50, signal="hold")
+                return None  # 无真实换手率/成交额数据，不显示（不出假情报）
 
             tr = tr.replace([np.inf, -np.inf], np.nan).fillna(method="ffill")
             n30 = min(30, len(tr))
             n5  = min(5, len(tr))
             if n30 < 5:
-                return Section(key="turnover", title="换手率趋势",
-                               content="数据不足（少于5日），无法分析换手率趋势",
-                               score=50, signal="hold")
+                return None  # 数据不足（少于5日），不显示
 
             tr30 = tr.iloc[-n30:]
             tr5  = tr.iloc[-n5:]
@@ -759,17 +699,17 @@ class TechnicalAnalyzer(BaseAnalyzer):
 
             close5_change = float(df.iloc[-1]["close"] - df.iloc[-n5]["close"]) / (float(df.iloc[-n5]["close"]) + 1e-9) * 100
 
-            # 趋势判断
+            # 客观趋势描述（不打分，打分交给 LLM）
             if avg5 > avg30 * 1.5 and close5_change > 0:
-                status, score = "换手率上升+价格上涨（健康上涨）", 68
+                status = "换手率上升+价格上涨"
             elif avg5 > avg30 * 1.5 and close5_change < 0:
-                status, score = "换手率上升+价格下跌（恐慌出货）", 30
+                status = "换手率上升+价格下跌"
             elif avg5 < avg30 * 0.5:
-                status, score = "换手率持续低迷（市场观望）", 50
+                status = "换手率持续低迷"
             elif avg5 > avg30 * 1.2:
-                status, score = "换手率略有上升（温和活跃）", 58
+                status = "换手率略有上升"
             else:
-                status, score = "换手率平稳", 50
+                status = "换手率平稳"
 
             content = (
                 f"**近5日均换手={avg5:.2f}%  近30日均换手={avg30:.2f}%**\n"
@@ -780,12 +720,11 @@ class TechnicalAnalyzer(BaseAnalyzer):
             return Section(key="turnover", title="换手率趋势",
                            content=content,
                            data={"avg5": avg5, "avg30": avg30, "max30": max30, "min30": min30},
-                           score=score, signal=self._score_to_signal(score))
-
-        except Exception as e:
-            return Section(key="turnover", title="换手率趋势",
-                           content=f"换手率分析失败：{e}",
                            score=50, signal="hold")
+
+        except Exception:
+            # 换手率分析失败，宁可不显示也不出假情报
+            return None
 
     def _analyze_margin(self, df: pd.DataFrame, stock_code: str) -> Section:
         """融资融券余额趋势分析"""
@@ -837,12 +776,13 @@ class TechnicalAnalyzer(BaseAnalyzer):
             slope = float(np.polyfit(x, rz.values, 1)[0])
             slope_pct = slope / (abs(earliest) + 1e-9) * 100
 
+            # 客观趋势描述（不打分，打分交给 LLM）
             if change_pct > 10:
-                score, status = 68, f"融资余额增加{change_pct:+.1f}%（资金加仓，看多情绪上升）"
+                status = f"融资余额增加{change_pct:+.1f}%"
             elif change_pct < -10:
-                score, status = 35, f"融资余额减少{change_pct:+.1f}%（资金撤退，看多情绪减弱）"
+                status = f"融资余额减少{change_pct:+.1f}%"
             else:
-                score, status = 52, f"融资余额平稳（变动{change_pct:+.1f}%）"
+                status = f"融资余额平稳（变动{change_pct:+.1f}%）"
 
             content = (
                 f"**最新融资余额={latest/1e8:.2f}亿  10日前={earliest/1e8:.2f}亿**\n"
@@ -853,12 +793,11 @@ class TechnicalAnalyzer(BaseAnalyzer):
             return Section(key="margin", title="融资融券",
                            content=content,
                            data={"latest": latest, "earliest": earliest, "change_pct": change_pct},
-                           score=score, signal=self._score_to_signal(score))
-
-        except Exception as e:
-            return Section(key="margin", title="融资融券",
-                           content=f"融资券数据获取失败（可能不在两融标的）：{e}",
                            score=50, signal="hold")
+
+        except Exception:
+            # 拿不到真实两融数据（可能不在两融标的），不显示（不出假情报）
+            return None
 
     def _analyze_llm_tech(self, df: pd.DataFrame, stock_name: str, llm_call, sections: list) -> Section:
         """基于所有已计算的量化指标，让 LLM 做综合技术精讲，输出具体点位和操作建议。"""
@@ -905,7 +844,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
         # 从已计算 sections 中提取背离摘要
         div_summary = ""
         for s in sections:
-            if s.key == "divergence" and s.content:
+            if s is not None and s.key == "divergence" and s.content:
                 first_line = s.content.strip().split("\n")[0]
                 div_summary = f"背离检测：{first_line}"
                 break
@@ -947,7 +886,8 @@ MACD零轴位置+柱线扩缩含义、RSI区间判断、KDJ J值状态、多指�
 ## 6. 仓位建议
 当前看多/看空强度，建议仓位比例
 
-输出最后一行格式：【信号】买入/观望/持有/减仓/卖出"""
+输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{"score":整数0到100,"signal":"buy或watch或hold或sell"}
+（score 越高越偏多：>65偏多、35-65中性、<35偏空；signal 只能是 buy/watch/hold/sell）"""
 
         try:
             content = llm_call(prompt).strip()
@@ -969,13 +909,8 @@ MACD零轴位置+柱线扩缩含义、RSI区间判断、KDJ J值状态、多指�
                 f"\n（LLM 综合精讲暂不可用，请检查 LLM API 配置）"
             )
 
-        score, signal = 50, "hold"
-        signal_map = {"买入": ("buy", 72), "观望": ("watch", 58), "持有": ("hold", 50),
-                      "减仓": ("hold", 42), "卖出": ("sell", 28)}
-        for label, (sig, sc) in signal_map.items():
-            if f"【信号】{label}" in content:
-                signal, score = sig, sc
-                break
+        score, signal = self._extract_llm_score(content)
+        content = self._strip_score_json(content)
         return Section(key="llm_tech", title="技术综合精讲（LLM）",
                        content=content, score=score, signal=signal)
 
@@ -1011,24 +946,24 @@ MACD零轴位置+柱线扩缩含义、RSI区间判断、KDJ J值状态、多指�
             elif boll_pos < 10: os_votes += 1; lines.append(f"布林位置={boll_pos:.0f}% 触下轨")
             else:               lines.append(f"布林位置={boll_pos:.0f}% 中部")
 
-        total = ob_votes + os_votes
+        # 多指标投票汇总（客观事实，不打分——打分交给 LLM）
         if ob_votes >= 3:
-            status, score = f"🔴 强烈超买（{ob_votes}/4 指标），短期回调风险高", 25
+            status = f"🔴 强烈超买（{ob_votes}/4 指标）"
         elif os_votes >= 3:
-            status, score = f"🟢 强烈超卖（{os_votes}/4 指标），反弹概率大", 75
+            status = f"🟢 强烈超卖（{os_votes}/4 指标）"
         elif ob_votes == 2:
-            status, score = f"🟠 偏超买（{ob_votes}/4），注意风险", 38
+            status = f"🟠 偏超买（{ob_votes}/4）"
         elif os_votes == 2:
-            status, score = f"🔵 偏超卖（{os_votes}/4），可关注", 62
+            status = f"🔵 偏超卖（{os_votes}/4）"
         else:
-            status, score = "⚪ 中性区域，无明显超买超卖", 50
+            status = "⚪ 中性区域，无明显超买超卖"
 
         content = "**" + status + "**\n" + "\n".join(f"- {x}" for x in lines) + \
                   "\n- 判据：多指标共振时信号更可靠（≥3 项同向为强信号）\n"
         return Section(key="overbought", title="超买超卖综合", content=content,
                        data={"rsi6": r6, "kdj_j": j, "wr14": wr, "boll_pos": boll_pos,
                              "ob_votes": ob_votes, "os_votes": os_votes},
-                       score=score, signal=self._score_to_signal(score))
+                       score=50, signal="hold")
 
     def _analyze_divergence(self, df) -> Section:
         """
@@ -1044,8 +979,7 @@ MACD零轴位置+柱线扩缩含义、RSI区间判断、KDJ J值状态、多指�
         import numpy as np
         n = len(df)
         if n < 30:
-            return Section(key="divergence", title="背离检测",
-                           content="数据不足（少于30日），无法可靠检测背离", score=50, signal="hold")
+            return None  # 数据不足（少于30日），不显示（不出假情报）
 
         close = df["close"].values.astype(float)
         high  = df["high"].values.astype(float)
@@ -1503,22 +1437,58 @@ MACD零轴位置+柱线扩缩含义、RSI区间判断、KDJ J值状态、多指�
         # 综合评分：最强信号方向
         best = signals[0]
         base_type = best["type"].replace("_emerging", "")
-        if "bull" in base_type:
-            score = 50 + int((best["score"] / 100) * 30)
-        else:
-            score = 50 - int((best["score"] / 100) * 30)
+        # 背离方向作为客观事实存入 data，打分交给 LLM
+        best["direction"] = "bullish" if "bull" in base_type else "bearish"
 
         content = "\n".join(lines) + "\n" + note
         return Section(key="divergence", title="背离检测", content=content,
                        data={"signals": signals[:5], "best": best},
-                       score=score, signal=self._score_to_signal(score))
+                       score=50, signal="hold")
 
     @staticmethod
-    def _score_to_signal(score: int) -> str:
-        if score >= 70: return "buy"
-        if score >= 55: return "watch"
-        if score >= 40: return "hold"
-        return "sell"
+    def _extract_llm_score(content: str) -> tuple:
+        """从 LLM 输出末尾解析 {"score":..,"signal":..}，打分完全由 LLM 决定。
+
+        解析失败时降级 (50, "hold")，不做任何硬编码信号推导。
+        """
+        import re as _re
+        import json as _json
+        if not content:
+            return 50, "hold"
+        # 抠最后一个 {...} JSON 对象
+        matches = _re.findall(r"\{[^{}]*\}", content)
+        for raw in reversed(matches):
+            try:
+                obj = _json.loads(raw)
+            except Exception:
+                continue
+            if "score" in obj or "signal" in obj:
+                try:
+                    score = int(round(float(obj.get("score", 50))))
+                except Exception:
+                    score = 50
+                score = max(0, min(100, score))
+                sig = str(obj.get("signal", "hold")).strip().lower()
+                if sig not in ("buy", "watch", "hold", "sell"):
+                    cn = {"买入": "buy", "关注": "watch", "观望": "watch",
+                          "持有": "hold", "减仓": "hold", "卖出": "sell"}
+                    sig = cn.get(str(obj.get("signal", "")).strip(), "hold")
+                return score, sig
+        return 50, "hold"
+
+    @staticmethod
+    def _strip_score_json(content: str) -> str:
+        """从展示文本里移除末尾的 score/signal JSON 行（用户不需要看到原始 JSON）。"""
+        import re as _re
+        if not content:
+            return content
+        # 去掉包含 "score" 和 "signal" 的 JSON 片段及其所在行
+        cleaned = _re.sub(r'\{[^{}]*"s(core|ignal)"[^{}]*\}', "", content)
+        # 清理因删除产生的空行
+        lines = [ln for ln in cleaned.split("\n")]
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines).strip()
 
 
 # ── 独立测试入口 ─────────────────────────────────────────────
