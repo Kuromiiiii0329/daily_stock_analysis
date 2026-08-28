@@ -460,7 +460,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
    - 入场条件：满足【具体价格或信号】时可考虑操作
    - 止损设置：XX价格以下止损（基于形态失效判断）
 
-输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{"score":整数0到100,"signal":"buy或watch或hold或sell"}
+输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{{"score":整数0到100,"signal":"buy或watch或hold或sell"}}
 （score 越高越偏多：>65偏多、35-65中性、<35偏空；signal 只能是 buy/watch/hold/sell）"""
         try:
             content = llm_call(prompt).strip()
@@ -528,7 +528,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
    - 当前适合的操作策略（分批买/持有/减仓等）
    - 入场价位：XX附近，止损：XX，目标：XX
 
-输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{"score":整数0到100,"signal":"buy或watch或hold或sell"}
+输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{{"score":整数0到100,"signal":"buy或watch或hold或sell"}}
 （score 越高越偏多：>65偏多、35-65中性、<35偏空；signal 只能是 buy/watch/hold/sell）"""
         try:
             content = llm_call(prompt).strip()
@@ -604,7 +604,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
    - 参考止损位：XX（基于缠论笔段失效判断）
    - 目标位：XX ~ XX
 
-输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{"score":整数0到100,"signal":"buy或watch或hold或sell"}
+输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{{"score":整数0到100,"signal":"buy或watch或hold或sell"}}
 （score 越高越偏多：>65偏多、35-65中性、<35偏空；signal 只能是 buy/watch/hold/sell）"""
         try:
             content = llm_call(prompt).strip()
@@ -863,7 +863,7 @@ RSI(6)={rsi6}  RSI(12)={r12}  KDJ K={k} D={d_} J={j}
 量比={vol_r}x  近5日涨跌={chg5:+.2f}%  近5日区间=[{tail5_low},{tail5_high}]
 {div_summary}
 
-请按以下6个方面分析，每项结合具体数值，总计400字以内：
+请按以下6个方面分析，每项结合具体数值展开：
 
 ## 1. 趋势判断
 均线排列（多头/空头/缠绕）+ 价格与MA60/MA120/MA250的位置关系 → 大/中/短三级趋势结论
@@ -886,7 +886,7 @@ MACD零轴位置+柱线扩缩含义、RSI区间判断、KDJ J值状态、多指�
 ## 6. 仓位建议
 当前看多/看空强度，建议仓位比例
 
-输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{"score":整数0到100,"signal":"buy或watch或hold或sell"}
+输出最后必须追加一行严格 JSON（基于你上面的分析给出评分与信号）：{{"score":整数0到100,"signal":"buy或watch或hold或sell"}}
 （score 越高越偏多：>65偏多、35-65中性、<35偏空；signal 只能是 buy/watch/hold/sell）"""
 
         try:

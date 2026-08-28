@@ -2,44 +2,52 @@
   "trade_date": "2026-08-27",
   "notes": {
     "ma_system": {
-      "stance": "bearish",
-      "reason": "MA5<MA10<MA20空排，价低于多条均线",
-      "impact": "上方13.93/15.24压力，反弹受限"
+      "score": 28,
+      "signal": "sell",
+      "reason": "空头排列，价13.55仅站MA5，低于MA10/20",
+      "impact": "上方13.93-15.24压力，反弹偏弱"
     },
     "macd": {
-      "stance": "bearish",
+      "score": 22,
+      "signal": "sell",
       "reason": "DIF=-0.1146低于DEA=0.1207，柱=-0.4706",
-      "impact": "空头动能占优，短线仍承压"
+      "impact": "零轴下空头占优，短线仍承压"
     },
     "rsi": {
-      "stance": "neutral",
-      "reason": "RSI12为27.2超卖，RSI6/24未共振",
-      "impact": "短线或有修复，但方向信号不强"
+      "score": 52,
+      "signal": "watch",
+      "reason": "RSI6=43.4中性，RSI12=27.2超卖",
+      "impact": "短线有修复可能，但整体仍震荡"
     },
     "kdj": {
-      "stance": "bearish",
-      "reason": "K=14.8低于D=15.4，未现金叉",
-      "impact": "短线仍偏弱，超卖仅提示反弹可能"
+      "score": 38,
+      "signal": "watch",
+      "reason": "K14.8<D15.4，J13.6，低位超卖但未金叉",
+      "impact": "短线偏弱，超卖区或有反弹观察"
     },
     "bollinger": {
-      "stance": "bearish",
-      "reason": "价格位于下半区，位置仅22%，评分42偏弱",
-      "impact": "短线承压，需收复中轨14.71才转稳"
+      "score": 42,
+      "signal": "watch",
+      "reason": "价格位于22%，处下半区，未破下轨12.64",
+      "impact": "短线偏弱震荡，需观察能否回到中轨14.71"
     },
     "overbought": {
-      "stance": "neutral",
-      "reason": "RSI6=43、KDJ_J=14中性，仅WR=-84超卖",
-      "impact": "缺少多指标共振，短线方向指引有限"
+      "score": 48,
+      "signal": "watch",
+      "reason": "RSI43中性，WR-84单项超卖，布林22%",
+      "impact": "整体中性偏弱，需观察是否企稳反弹"
     },
     "divergence": {
-      "stance": "neutral",
-      "reason": "评分50，signals为空，未现顶/底背离",
-      "impact": "缺少反转信号，对后市指引有限"
+      "score": 50,
+      "signal": "watch",
+      "reason": "背离signals为空，未见顶/底背离",
+      "impact": "缺少反转信号，后市偏震荡观察"
     },
     "volume": {
-      "stance": "bullish",
-      "reason": "量比1.27属正常，股价上涨3.12%",
-      "impact": "温和量价配合，短线偏多但力度一般"
+      "score": 62,
+      "signal": "watch",
+      "reason": "量比1.27属正常，股价涨3.12%偏强",
+      "impact": "温和偏多，需放量确认持续性"
     }
   }
 }

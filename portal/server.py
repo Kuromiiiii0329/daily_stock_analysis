@@ -54,6 +54,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── 压制第三方库噪音日志 ───────────────────────────────────
+# litellm 在解析 provider/model 时会打印 "Provider List: https://..." 等对用户无用的行，
+# 统一把 litellm 及其底层 httpx/openai 日志级别调到 ERROR，只保留真正的错误。
+for _noisy in ("LiteLLM", "litellm", "httpx", "httpcore", "openai"):
+    logging.getLogger(_noisy).setLevel(logging.ERROR)
+try:
+    import os as _os
+    _os.environ.setdefault("LITELLM_LOG", "ERROR")  # litellm 新版用此环境变量控制日志
+except Exception:
+    pass
+
 # ── 任务管理 ────────────────────────────────────────────────
 # task_id -> {"status": "running"|"done"|"error", "logs": [...], "report": str, "started_at": ...}
 _tasks: dict = {}
@@ -862,6 +873,10 @@ def _run_deep_analysis_task(
                     if s.key in scores:
                         s.score = scores[s.key]["score"]
                         s.signal = scores[s.key]["signal"]
+                        # per_indicator 模式下 LLM 产出了详细分析，追加到客观描述之后展示
+                        detail = scores[s.key].get("detail")
+                        if detail:
+                            s.content = (s.content or "").rstrip() + "\n\n**📊 LLM 分析**\n" + detail
                 tech_llm_notes = scores
                 # 重算技术面维度综合分 + 维度综合信号（信号交给 LLM 做总结判断）
                 _recompute_tech_dimension(tech_result, llm_call, log)
@@ -1155,6 +1170,12 @@ def _make_llm_caller(log):
     """
     try:
         import litellm
+        # 关掉 litellm 的调试提示（含 "Provider List: https://..." 这类无用行）
+        try:
+            litellm.suppress_debug_info = True
+            litellm.set_verbose = False
+        except Exception:
+            pass
 
         # ── 优先：Hai Proxy（内网 OpenAI 兼容网关）──────────────
         hai_base = os.environ.get("HAI_BASE_URL")

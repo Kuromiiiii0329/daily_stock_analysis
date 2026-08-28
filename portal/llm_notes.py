@@ -83,13 +83,24 @@ def _parse_json(text: str) -> Optional[dict]:
     return None
 
 
+def _strip_trailing_json(text: str) -> str:
+    """从 LLM 回复里剥离 score/signal 的 JSON 片段，返回纯分析正文（供展示）。"""
+    if not text:
+        return ""
+    # 去 markdown 围栏
+    cleaned = re.sub(r"```(?:json)?", "", text)
+    # 去掉含 score/signal 的 JSON 对象
+    cleaned = re.sub(r'\{[^{}]*"s(?:core|ignal)"[^{}]*\}', "", cleaned)
+    return cleaned.strip()
+
+
 def _norm_score(obj) -> dict:
     """规范化单条打分为 {score, signal, reason, impact}。
 
     零硬编码原则：signal 由 LLM 直接给，非法时降级 hold（**不从 score 推导**）。
     """
     if not isinstance(obj, dict):
-        return {"score": 50, "signal": "hold", "reason": str(obj)[:40], "impact": ""}
+        return {"score": 50, "signal": "hold", "reason": str(obj), "impact": ""}
 
     # score：转 int，clamp [0,100]，非法 → 50
     try:
@@ -113,8 +124,8 @@ def _norm_score(obj) -> dict:
     return {
         "score": score,
         "signal": signal,
-        "reason": str(obj.get("reason", ""))[:60],
-        "impact": str(obj.get("impact", ""))[:60],
+        "reason": str(obj.get("reason", "")),
+        "impact": str(obj.get("impact", "")),
     }
 
 
@@ -128,15 +139,17 @@ def _section_brief(s: dict) -> str:
 
 
 def _build_single_prompt(stock_name: str, s: dict) -> str:
-    return f"""你是A股技术分析师。下面是 {stock_name} 某个技术指标的**客观数值（由系统计算，不可篡改）**。请你**基于这些真实数值**给出评分与信号。
+    return f"""你是A股技术分析师。下面是 {stock_name} 的「{s.get('title')}」指标的**客观数值（由系统计算，不可篡改）**。请你**基于这些真实数值**做详细分析，并给出评分与信号。
 
 {_section_brief(s)}
 
-评分标准：score 为 0-100 整数，越高越偏多（>65 偏多、35-65 中性震荡、<35 偏空）。
-信号 signal 只能是：buy（买入）/ watch（关注）/ hold（持有）/ sell（卖出）。
+【要求】
+1. 详细分析（分 2-4 点，每点结合上面的具体数值展开，说明该指标当前反映的多空含义、力度、需要关注的信号或风险）。
+2. 分析写完后，最后必须**单独追加一行严格 JSON**给出评分与信号（基于你的分析）：
+{{"score":整数0到100,"signal":"buy或watch或hold或sell","reason":"核心依据","impact":"对后市影响"}}
 
-只返回严格 JSON（不要任何解释文字、不要markdown围栏）：
-{{"score":整数0到100,"signal":"buy或watch或hold或sell","reason":"评分依据，引用具体数值，≤40字","impact":"对后市影响，≤40字"}}"""
+评分标准：score 越高越偏多（>65 偏多、35-65 中性震荡、<35 偏空）；signal 只能是 buy/watch/hold/sell。
+注意：先输出分析正文，JSON 只放在最后一行，不要用 markdown 围栏包裹 JSON。"""
 
 
 def _build_batch_prompt(stock_name: str, sections: list) -> str:
@@ -151,7 +164,7 @@ def _build_batch_prompt(stock_name: str, sections: list) -> str:
 信号 signal 只能是：buy / watch / hold / sell。
 
 只返回严格 JSON 对象（不要解释、不要markdown围栏），键为指标标识，值为该指标的打分：
-{{"{first_key}":{{"score":整数0到100,"signal":"buy或watch或hold或sell","reason":"依据,引用数值,≤40字","impact":"影响,≤40字"}}, ...其余指标同理}}
+{{"{first_key}":{{"score":整数0到100,"signal":"buy或watch或hold或sell","reason":"依据,引用数值","impact":"影响"}}, ...其余指标同理}}
 必须包含全部这些键：{keys}"""
 
 
@@ -203,16 +216,21 @@ def score_sections(code: str, stock_name: str, trade_date: str,
     result = {k: v for k, v in cached.items() if _cache_valid(k)}
 
     if mode == "per_indicator":
-        _log(f"📝 逐指标打分（单独调用）：{len(todo)} 项待分析（缓存命中 {len(result)}）")
+        _log(f"📝 逐指标打分（单独调用，含详细分析）：{len(todo)} 项待分析（缓存命中 {len(result)}）")
         for i, s in enumerate(todo, 1):
             key = _get(s, "key")
-            _log(f"  🤖 打分 {i}/{len(todo)}：{_get(s, 'title')}")
+            _log(f"  🤖 分析+打分 {i}/{len(todo)}：{_get(s, 'title')}")
             try:
                 resp = llm_call(_build_single_prompt(stock_name, _as_dict(s)))
                 obj = _parse_json(resp)
-                result[key] = _norm_score(obj) if obj else {"score": 50, "signal": "hold", "reason": (resp or "")[:40], "impact": ""}
+                note = _norm_score(obj) if obj else {"score": 50, "signal": "hold", "reason": (resp or ""), "impact": ""}
+                # per_indicator 额外保留详细分析正文（去掉末尾 JSON），供 Section.content 展示
+                detail = _strip_trailing_json(resp)
+                if detail:
+                    note["detail"] = detail
+                result[key] = note
             except Exception as e:
-                logger.warning("[llm_notes] 单项打分失败 %s/%s: %s", code, key, e)
+                logger.warning("[llm_notes] 单项分析打分失败 %s/%s: %s", code, key, e)
                 result[key] = {"score": 50, "signal": "hold", "reason": "分析失败", "impact": ""}
     else:  # batch
         _log(f"📝 批量打分（打包一次）：{len(todo)} 项分析（缓存命中 {len(result)}）")
