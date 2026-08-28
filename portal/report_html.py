@@ -126,6 +126,11 @@ body{font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;backgroun
 .sec-bd .li{padding-left:8px}.sec-bd code{background:#eef2ff;color:#4338ca;padding:0 4px;border-radius:4px;font-size:12px}
 .note{margin-top:8px;padding:8px 10px;border-radius:8px;font-size:13px;border-left:3px solid}
 .note b{font-weight:700}
+.forecast-meta{display:flex;gap:20px;flex-wrap:wrap;padding:10px 14px 0}
+.forecast-meta-item{background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:8px 14px;font-size:13px;flex:1;min-width:160px}
+.forecast-meta-item .fm-label{color:#6b7280;font-size:11px;margin-bottom:2px}
+.forecast-meta-item .fm-value{font-weight:700;font-size:15px}
+.forecast-note{padding:6px 14px 10px;font-size:11px;color:#9ca3af}
 .foot{text-align:center;color:#9ca3af;font-size:12px;margin-top:20px;padding:12px}
 .small{font-size:12px;color:#6b7280}
 """
@@ -135,7 +140,156 @@ def _dim_icon(dim: str) -> str:
     return {"technical": "📊", "fundamental": "📈", "industry": "🏭"}.get(dim, "📋")
 
 
-def _render_sections_html(sections: list, llm_notes: dict) -> str:
+def _render_forecast_html(forecast: dict, kline_data: list, chart_id: str) -> tuple:
+    """渲染走势预测模块：次日高低点文字 + 7日模拟K线图（ECharts）。
+
+    返回 (html_fragment, js_fragment)，js_fragment 需追加到 init_js 里执行。
+    """
+    if not forecast:
+        return "", ""
+
+    next_day = forecast.get("next_day") or {}
+    week = forecast.get("week_forecast") or []
+
+    # ── 次日预测摘要 ──────────────────────────────────────────
+    nd_high  = next_day.get("high", "")
+    nd_low   = next_day.get("low", "")
+    nd_trend = _esc(next_day.get("trend", "震荡"))
+    nd_reason = _esc(next_day.get("reason", ""))
+
+    trend_colors = {
+        "上涨": "#16a34a", "震荡上行": "#2563eb",
+        "震荡": "#6b7280", "震荡下行": "#f97316", "下跌": "#dc2626",
+    }
+    trend_raw = next_day.get("trend", "震荡")
+    tc = trend_colors.get(trend_raw, "#6b7280")
+
+    meta_html = f"""
+    <div class="forecast-meta">
+      <div class="forecast-meta-item">
+        <div class="fm-label">次日预测高点</div>
+        <div class="fm-value" style="color:#dc2626">{_esc(str(nd_high)) if nd_high else "—"}</div>
+      </div>
+      <div class="forecast-meta-item">
+        <div class="fm-label">次日预测低点</div>
+        <div class="fm-value" style="color:#16a34a">{_esc(str(nd_low)) if nd_low else "—"}</div>
+      </div>
+      <div class="forecast-meta-item">
+        <div class="fm-label">次日走势判断</div>
+        <div class="fm-value" style="color:{tc}">{nd_trend}</div>
+      </div>
+    </div>
+    {('<div style="padding:6px 14px 2px;font-size:12px;color:#6b7280">💬 ' + nd_reason + '</div>') if nd_reason else ''}
+    """
+
+    # ── 7日模拟K线图（ECharts）────────────────────────────────
+    # 历史：取最近 30 条真实 K 线
+    hist = [r for r in (kline_data or []) if isinstance(r, dict) and r.get("close")][-30:]
+
+    # 预测部分拼接（open 字段可能来自 LLM，week[].open/high/low/close）
+    forecast_candles = []
+    for i, w in enumerate(week[:7]):
+        if not isinstance(w, dict):
+            continue
+        forecast_candles.append({
+            "day": i + 1,
+            "open":  w.get("open"),
+            "high":  w.get("high"),
+            "low":   w.get("low"),
+            "close": w.get("close"),
+            "note":  w.get("note", ""),
+        })
+
+    hist_js  = json.dumps(hist,             ensure_ascii=False)
+    fore_js  = json.dumps(forecast_candles, ensure_ascii=False)
+
+    js = f"""
+    (function(){{
+      var hist={hist_js};
+      var fore={fore_js};
+      var el=document.getElementById('{chart_id}');
+      if(!el||typeof echarts==='undefined')return;
+
+      // 历史区日期标签
+      var hDates=hist.map(function(r){{return (r.date||'').slice(5)}});
+      var hCand=hist.map(function(r){{
+        var o=r.open!=null?r.open:r.close, h=r.high!=null?r.high:r.close,
+            l=r.low!=null?r.low:r.close, c=r.close;
+        return [o,c,l,h];
+      }});
+
+      // 预测区日期标签（D+1 … D+7）
+      var fDates=fore.map(function(r){{return 'D+'+(r.day||'?')}});
+      var fCand=fore.map(function(r){{return [r.open,r.close,r.low,r.high];}});
+
+      var allDates=hDates.concat(fDates);
+      // 历史蜡烛（实体颜色：红涨绿跌），预测蜡烛（灰色渐变区分）
+      var histSeries={{
+        name:'历史K线',type:'candlestick',
+        data:hCand,
+        itemStyle:{{color:'#ef4444',color0:'#10b981',borderColor:'#ef4444',borderColor0:'#10b981'}},
+        markArea:{{silent:true,data:[[{{xAxis:hDates[0]}},{{xAxis:hDates[hDates.length-1]}}]]}}
+      }};
+      var foreSeries={{
+        name:'预测走势',type:'candlestick',
+        data:Array(hDates.length).fill(null).concat(fCand),
+        itemStyle:{{color:'rgba(168,85,247,0.8)',color0:'rgba(99,102,241,0.8)',
+                   borderColor:'#7c3aed',borderColor0:'#4f46e5'}},
+      }};
+      var hMa5=hist.map(function(r){{return r.ma5||null}});
+      var hMa20=hist.map(function(r){{return r.ma20||null}});
+      echarts.init(el).setOption({{
+        backgroundColor:'#fff',
+        tooltip:{{trigger:'axis',axisPointer:{{type:'cross'}}}},
+        legend:{{data:['历史K线','预测走势','MA5','MA20'],top:2,textStyle:{{fontSize:11}}}},
+        grid:{{left:8,right:8,top:30,bottom:24,containLabel:true}},
+        xAxis:{{
+          type:'category',data:allDates,
+          axisLabel:{{fontSize:9,color:'#9ca3af'}},
+          axisLine:{{lineStyle:{{color:'#e5e7eb'}}}},
+          splitLine:{{show:false}},
+          // 预测区用浅色背景
+          axisPointer:{{label:{{backgroundColor:'#7c3aed'}}}}
+        }},
+        yAxis:{{scale:true,axisLabel:{{fontSize:9,color:'#9ca3af'}},splitLine:{{lineStyle:{{color:'#f3f4f6'}}}}}},
+        visualMap:[{{
+          show:false,seriesIndex:0,
+          pieces:[{{gt:-999999,lte:0,color:'#10b981'}},{{gt:0,color:'#ef4444'}}]
+        }}],
+        series:[
+          histSeries,
+          foreSeries,
+          {{name:'MA5',type:'line',data:hMa5.concat(Array(fDates.length).fill(null)),
+            symbol:'none',lineStyle:{{color:'#f97316',width:1}}}},
+          {{name:'MA20',type:'line',data:hMa20.concat(Array(fDates.length).fill(null)),
+            symbol:'none',lineStyle:{{color:'#8b5cf6',width:1}}}}
+        ]
+      }});
+    }})();
+    """
+
+    note_items = "".join(
+        f'<span style="margin-right:12px">D+{w.get("day","?")}：{_esc(str(w.get("note","")))}</span>'
+        for w in forecast_candles if w.get("note")
+    )
+
+    html = f"""
+    <div class="card" style="padding:0">
+      <div class="dim-hd">
+        <span>📈 走势预测</span>
+        <span style="font-size:11px;color:#9ca3af;font-weight:400">LLM 情景模拟，仅供参考</span>
+      </div>
+      {meta_html}
+      <div style="padding:8px 14px 4px">
+        <div id="{chart_id}" style="height:280px;width:100%"></div>
+      </div>
+      {('<div class="forecast-note">📝 ' + note_items + '</div>') if note_items else ''}
+    </div>
+    """
+    return html, js
+
+
+# ── 个股报告 ──────────────────────────────────────────────────
     """渲染一组 section 卡片（含 LLM 打分说明块）。"""
     parts = []
     for s in sections:
@@ -198,6 +352,13 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
     kline = report.get("kline_data", []) or []
     radar_scores = {d.get("dimension"): d.get("score", 0) for d in dims}
 
+    # ── 走势预测模块 ──────────────────────────────────────────
+    forecast_html, forecast_js = _render_forecast_html(
+        report.get("price_forecast") or {},
+        kline,
+        "forecast_chart",
+    )
+
     init_js = f"""
     (function(){{
       if(typeof echarts==='undefined')return;
@@ -233,6 +394,7 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
         }});
       }}
     }})();
+    {forecast_js}
     """
 
     body = f"""
@@ -247,6 +409,7 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
       </div>
       {'<div class="concl">🎯 <b>综合结论</b>：' + conclusion + '</div>' if conclusion else ''}
       {'<div class="concl" style="border-left-color:#3b82f6;background:#eff6ff">🤖 <b>Agent 综合研判</b><div style="margin-top:6px">' + agent_review_html + '</div></div>' if agent_review_html else ''}
+      {forecast_html}
       <div class="grid2">
         <div class="card"><div class="small" style="margin-bottom:6px">📡 维度评分雷达</div><div id="radar" class="chart" style="height:260px"></div></div>
         <div class="card"><div class="small" style="margin-bottom:6px">📈 K线走势（近90日）</div><div id="kline" class="chart" style="height:260px"></div></div>

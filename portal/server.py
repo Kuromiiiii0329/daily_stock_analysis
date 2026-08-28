@@ -891,7 +891,7 @@ def _run_deep_analysis_task(
         final_report["llm_notes"] = tech_llm_notes
         log(f"🎯 综合评分={final_report['overall_score']}，信号={final_report['overall_signal_label']}")
 
-        # ── 注入 K线数据（最近60条 date/close/ma5/ma20）────────
+        # ── 注入 K线数据（最近60条 date/open/high/low/close/ma5/ma20）──
         if df is not None and not df.empty:
             try:
                 kline_df = df.copy()
@@ -901,6 +901,12 @@ def _run_deep_analysis_task(
                     lc = c.lower()
                     if lc in ('trade_date', 'tradedate', 'date'):
                         col_map[c] = 'date'
+                    elif lc == 'open':
+                        col_map[c] = 'open'
+                    elif lc == 'high':
+                        col_map[c] = 'high'
+                    elif lc == 'low':
+                        col_map[c] = 'low'
                     elif lc == 'close':
                         col_map[c] = 'close'
                     elif lc == 'ma5':
@@ -916,7 +922,7 @@ def _run_deep_analysis_task(
                     if 'ma20' not in kline_df.columns:
                         kline_df['ma20'] = kline_df['close'].rolling(20, min_periods=1).mean().round(2)
 
-                keep_cols = [c for c in ('date', 'close', 'ma5', 'ma20') if c in kline_df.columns]
+                keep_cols = [c for c in ('date', 'open', 'high', 'low', 'close', 'ma5', 'ma20') if c in kline_df.columns]
                 kline_df = kline_df[keep_cols].tail(60)
 
                 # 序列化为干净的 list[dict]，NaN → None
@@ -968,9 +974,9 @@ def _run_deep_analysis_task(
 
         # ── 🤖 Agent 综合研判（选项B：单次 LLM 复用已算数据，零重复取数）──
         if agent_review:
+            summary_text = _summarize_report_for_agent(final_report)
             try:
                 log("🤖 Agent 综合研判：基于已算好的全部指标做深度研判...")
-                summary_text = _summarize_report_for_agent(final_report)
                 if llm_call:
                     review_text = llm_call(build_review_prompt(stock_name, stock_code, summary_text)).strip()
                     final_report["agent_review"] = review_text
@@ -982,6 +988,31 @@ def _run_deep_analysis_task(
                 logger.warning("Agent 综合研判失败: %s", e)
                 log(f"⚠️ Agent 综合研判失败：{e}")
                 final_report["agent_review"] = ""
+
+            # ── 📈 走势预测（7 交易日模拟 K 线 + 次日高低点）──
+            try:
+                log("📈 走势预测：预测未来 7 交易日走势及次日高低点...")
+                kline_tail = [
+                    r for r in (final_report.get("kline_data") or [])
+                    if isinstance(r, dict) and r.get("close")
+                ][-15:]  # 喂最近 15 条（含 OHLC）
+                if llm_call and kline_tail:
+                    raw = llm_call(build_forecast_prompt(stock_name, stock_code, summary_text, kline_tail)).strip()
+                    # 抠 JSON
+                    s, e_ = raw.find("{"), raw.rfind("}")
+                    forecast_obj = json.loads(raw[s:e_+1]) if s >= 0 and e_ > s else {}
+                    final_report["price_forecast"] = forecast_obj
+                    log(f"✅ 走势预测完成")
+                else:
+                    final_report["price_forecast"] = {}
+                    if not llm_call:
+                        log("⚠️ 未配置 LLM，跳过走势预测")
+                    else:
+                        log("⚠️ K线数据不足，跳过走势预测")
+            except Exception as e:
+                logger.warning("走势预测失败: %s", e)
+                log(f"⚠️ 走势预测失败：{e}")
+                final_report["price_forecast"] = {}
 
         # ── 生成独立 HTML 报告 + 自动打开 ─────────────────────
         html_path = None
@@ -1330,6 +1361,50 @@ def build_review_prompt(stock_name: str, stock_code: str, summary_text: str) -> 
 4. **风险提示**：一句话点明当前最需警惕的风险。
 
 直接输出研判，用自然段落 + 关键处加粗，不要加大标题。"""
+
+
+def build_forecast_prompt(stock_name: str, stock_code: str, summary_text: str, kline_tail: list) -> str:
+    """构造走势预测 prompt，要求 LLM 输出结构化 JSON。
+
+    kline_tail: 最近若干条 {date, open, close, low, high} 记录，供 LLM 感知价格区间。
+    """
+    kline_str = "\n".join(
+        f"  {r.get('date')}: O={r.get('open')} H={r.get('high')} L={r.get('low')} C={r.get('close')}"
+        for r in kline_tail if isinstance(r, dict)
+    )
+    return f"""你是一位 A 股量化技术分析师。以下是 {stock_name}（{stock_code}）的量化分析摘要和近期 K 线数据。
+请基于这些信息，给出**走势预测**（这是模型推理的情景模拟，仅供研究参考，不构成投资建议）。
+
+量化分析摘要：
+{summary_text}
+
+最近 K 线（OHLC）：
+{kline_str}
+
+请**只返回严格 JSON**（不要解释、不要 markdown 围栏），格式如下：
+{{
+  "next_day": {{
+    "high": 数字,
+    "low": 数字,
+    "trend": "上涨|震荡上行|震荡|震荡下行|下跌",
+    "reason": "简短依据（1-2句）"
+  }},
+  "week_forecast": [
+    {{"day": 1, "open": 数字, "high": 数字, "low": 数字, "close": 数字, "note": "简短说明"}},
+    {{"day": 2, "open": 数字, "high": 数字, "low": 数字, "close": 数字, "note": ""}},
+    {{"day": 3, "open": 数字, "high": 数字, "low": 数字, "close": 数字, "note": ""}},
+    {{"day": 4, "open": 数字, "high": 数字, "low": 数字, "close": 数字, "note": ""}},
+    {{"day": 5, "open": 数字, "high": 数字, "low": 数字, "close": 数字, "note": ""}},
+    {{"day": 6, "open": 数字, "high": 数字, "low": 数字, "close": 数字, "note": ""}},
+    {{"day": 7, "open": 数字, "high": 数字, "low": 数字, "close": 数字, "note": ""}}
+  ]
+}}
+
+注意：
+- 所有价格数字必须是合理的浮点数，基于最近收盘价 {kline_tail[-1].get('close') if kline_tail else '?'} 附近，幅度不超过 ±10%。
+- next_day 的 high/low 要比 week_forecast[0] 的 high/low 更精确（日内区间更窄）。
+- week_forecast 每日 open 应等于或接近前一日 close（连续性）。
+- 只输出 JSON，不要任何其他文字。"""
 
 
 def _make_search_fn(log):
