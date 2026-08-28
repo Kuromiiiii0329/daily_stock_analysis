@@ -218,7 +218,7 @@ export class RunTab {
               <!-- 结果区：默认隐藏 -->
               <div id="bt-result" class="hidden space-y-3">
                 <div id="bt-meta" class="text-xs text-gray-400"></div>
-                <div id="bt-chart" style="height:260px"></div>
+                <div id="bt-chart" style="height:300px"></div>
                 <div id="bt-table" class="overflow-x-auto"></div>
               </div>
               <div id="bt-error" class="hidden text-xs text-red-400 py-2"></div>
@@ -537,8 +537,8 @@ export class RunTab {
 
     const signals = data.signals || {};
     const names   = Object.keys(signals).filter(k => signals[k].count > 0);
-    const days    = ['5', '10', '20'];
-    const colors  = { '5': '#3b82f6', '10': '#f59e0b', '20': '#10b981' };
+    const days    = ['1', '3', '5', '10', '20'];
+    const colors  = { '1': '#a855f7', '3': '#ec4899', '5': '#3b82f6', '10': '#f59e0b', '20': '#10b981' };
 
     // ── ECharts 柱状图：各信号 × 三个持有期的胜率 ──────────────
     if (typeof echarts !== 'undefined' && names.length > 0) {
@@ -572,7 +572,8 @@ export class RunTab {
         series: days.map(d => ({
           name: d + '日胜率',
           type: 'bar',
-          barGap: '10%',
+          barGap: '5%',
+          barCategoryGap: '30%',
           itemStyle: { color: colors[d], borderRadius: [3, 3, 0, 0] },
           data: names.map(n => signals[n].stats?.[d]?.win_rate ?? 0),
           label: { show: true, position: 'top', fontSize: 9,

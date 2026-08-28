@@ -378,12 +378,13 @@ def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
         var dates=d.map(function(x){{return (x.date||'').slice(5)}});
         var cand=d.map(function(x){{return [x.open,x.close,x.low,x.high]}});
         var hasOHLC=d[0]&&d[0].open!=null;
-        var ma5=d.map(function(x){{return x.ma5}}),ma20=d.map(function(x){{return x.ma20}});
+        var ma5=d.map(function(x){{return x.ma5}}),ma20=d.map(function(x){{return x.ma20}}),ma250=d.map(function(x){{return x.ma250||null}});
         var series=[];
         if(hasOHLC){{series.push({{name:'K线',type:'candlestick',data:cand,itemStyle:{{color:'#ef4444',color0:'#10b981',borderColor:'#ef4444',borderColor0:'#10b981'}}}});}}
         else{{series.push({{name:'收盘',type:'line',data:d.map(function(x){{return x.close}}),symbol:'none',lineStyle:{{color:'#3b82f6',width:2}}}});}}
         series.push({{name:'MA5',type:'line',data:ma5,symbol:'none',lineStyle:{{color:'#f97316',width:1}}}});
         series.push({{name:'MA20',type:'line',data:ma20,symbol:'none',lineStyle:{{color:'#8b5cf6',width:1}}}});
+        series.push({{name:'MA250',type:'line',data:ma250,symbol:'none',lineStyle:{{color:'#dc2626',width:1.5,type:'dashed'}}}});
         echarts.init(kEl).setOption({{
           tooltip:{{trigger:'axis',axisPointer:{{type:'cross'}}}},
           legend:{{data:series.map(function(s){{return s.name}}),top:2,textStyle:{{fontSize:11}}}},

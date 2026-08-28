@@ -305,6 +305,33 @@ class StockDataCache:
         except Exception as e:
             logger.warning("[cache] 保存商品缓存失败 %s/%s: %s", code, keyword, e)
 
+    # ── 回测缓存 ──────────────────────────────────────────────
+    def _backtest_path(self, code: str) -> Path:
+        return self._stock_dir(code) / "backtest.json"
+
+    def save_backtest(self, code: str, result: dict):
+        """保存回测结果到 backtest.json（每次运行覆盖）。"""
+        try:
+            data = {"code": code, "updated_at": _now_cn().isoformat(), "result": result}
+            self._backtest_path(code).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            logger.info("[cache] 保存回测结果 %s", code)
+        except Exception as e:
+            logger.warning("[cache] 保存回测失败 %s: %s", code, e)
+
+    def get_backtest(self, code: str) -> Optional[dict]:
+        """读取回测缓存，返回 result 字典，无缓存返回 None。"""
+        path = self._backtest_path(code)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data.get("result")
+        except Exception as e:
+            logger.warning("[cache] 读取回测失败 %s: %s", code, e)
+            return None
+
     # ── 统计 ──────────────────────────────────────────────────
     def list_cached_stocks(self) -> list[dict]:
         """列出所有已缓存的股票及基本信息。"""

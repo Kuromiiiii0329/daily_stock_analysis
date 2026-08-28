@@ -1,6 +1,6 @@
 """
 portal/backtester.py — 简单信号回测引擎
-统计各技术信号触发后 5/10/20 日的平均收益率和胜率
+统计各技术信号触发后 1/3/5/10/20 日的平均收益率和胜率
 """
 from __future__ import annotations
 import logging
@@ -22,7 +22,7 @@ SIGNALS = [
     ("价格跌破布林下轨", lambda r: r.get("close",0) < r.get("boll_lower",0) > 0),
 ]
 
-def run_backtest(df: pd.DataFrame, forward_days=(5, 10, 20)) -> dict:
+def run_backtest(df: pd.DataFrame, forward_days=(1, 3, 5, 10, 20)) -> dict:
     """对历史K线数据运行所有信号回测，返回胜率统计。"""
     if df is None or len(df) < 60:
         return {"error": "数据不足60日，无法回测"}
@@ -36,6 +36,7 @@ def run_backtest(df: pd.DataFrame, forward_days=(5, 10, 20)) -> dict:
     for sig_name, sig_fn in SIGNALS:
         win_counts = {d: 0 for d in forward_days}
         ret_sums   = {d: 0.0 for d in forward_days}
+        valid_counts = {d: 0 for d in forward_days}  # 持有期内有足够后续数据的触发次数
         total = 0
         for i in range(1, n):
             row = df.iloc[i].to_dict()
@@ -55,6 +56,7 @@ def run_backtest(df: pd.DataFrame, forward_days=(5, 10, 20)) -> dict:
                 if i + d < n:
                     ret = (closes[i + d] - closes[i]) / closes[i] * 100
                     ret_sums[d] += ret
+                    valid_counts[d] += 1
                     if ret > 0:
                         win_counts[d] += 1
         if total == 0:
@@ -64,10 +66,11 @@ def run_backtest(df: pd.DataFrame, forward_days=(5, 10, 20)) -> dict:
             "count": total,
             "stats": {
                 str(d): {
-                    "win_rate": round(win_counts[d] / total * 100, 1),
-                    "avg_return": round(ret_sums[d] / total, 2),
+                    "win_rate":   round(win_counts[d] / valid_counts[d] * 100, 1) if valid_counts[d] else None,
+                    "avg_return": round(ret_sums[d] / valid_counts[d], 2) if valid_counts[d] else None,
+                    "valid":      valid_counts[d],
                 }
-                for d in forward_days if total > 0
+                for d in forward_days
             }
         }
 

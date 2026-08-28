@@ -714,6 +714,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": f"回测执行失败：{e}"})
             return
 
+        # 保存到缓存，供走势预测等模块复用
+        try:
+            from portal.data_cache import StockDataCache
+            StockDataCache().save_backtest(code, result)
+        except Exception as e:
+            logger.warning("保存回测缓存失败 %s: %s", code, e)
+
         self._send_json(200, {"ok": True, "code": code, "backtest": result})
 
 
@@ -913,17 +920,21 @@ def _run_deep_analysis_task(
                         col_map[c] = 'ma5'
                     elif lc == 'ma20':
                         col_map[c] = 'ma20'
+                    elif lc == 'ma250':
+                        col_map[c] = 'ma250'
                 kline_df = kline_df.rename(columns=col_map)
 
-                # 如果缺少 ma5/ma20，现场计算
+                # 如果缺少 ma5/ma20/ma250，现场计算
                 if 'close' in kline_df.columns:
                     if 'ma5' not in kline_df.columns:
                         kline_df['ma5'] = kline_df['close'].rolling(5, min_periods=1).mean().round(2)
                     if 'ma20' not in kline_df.columns:
                         kline_df['ma20'] = kline_df['close'].rolling(20, min_periods=1).mean().round(2)
+                    if 'ma250' not in kline_df.columns:
+                        kline_df['ma250'] = kline_df['close'].rolling(250, min_periods=200).mean().round(2)
 
-                keep_cols = [c for c in ('date', 'open', 'high', 'low', 'close', 'ma5', 'ma20') if c in kline_df.columns]
-                kline_df = kline_df[keep_cols].tail(60)
+                keep_cols = [c for c in ('date', 'open', 'high', 'low', 'close', 'ma5', 'ma20', 'ma250') if c in kline_df.columns]
+                kline_df = kline_df[keep_cols].tail(250)
 
                 # 序列化为干净的 list[dict]，NaN → None
                 kline_records = []
@@ -996,13 +1007,31 @@ def _run_deep_analysis_task(
                     r for r in (final_report.get("kline_data") or [])
                     if isinstance(r, dict) and r.get("close")
                 ][-15:]  # 喂最近 15 条（含 OHLC）
+
+                # 读取或现场生成回测数据（供预测 prompt 参考）
+                backtest_result = None
+                try:
+                    from portal.data_cache import StockDataCache
+                    from portal.backtester import run_backtest
+                    _cache = StockDataCache()
+                    backtest_result = _cache.get_backtest(stock_code)
+                    if backtest_result is None and df is not None and not df.empty:
+                        log("📊 回测数据缺失，现场生成...")
+                        backtest_result = run_backtest(df)
+                        _cache.save_backtest(stock_code, backtest_result)
+                        log("✅ 回测数据已生成并缓存")
+                except Exception as _be:
+                    logger.warning("走势预测阶段获取回测数据失败: %s", _be)
+
                 if llm_call and kline_tail:
-                    raw = llm_call(build_forecast_prompt(stock_name, stock_code, summary_text, kline_tail)).strip()
+                    raw = llm_call(build_forecast_prompt(
+                        stock_name, stock_code, summary_text, kline_tail, backtest_result
+                    )).strip()
                     # 抠 JSON
                     s, e_ = raw.find("{"), raw.rfind("}")
                     forecast_obj = json.loads(raw[s:e_+1]) if s >= 0 and e_ > s else {}
                     final_report["price_forecast"] = forecast_obj
-                    log(f"✅ 走势预测完成")
+                    log("✅ 走势预测完成")
                 else:
                     final_report["price_forecast"] = {}
                     if not llm_call:
@@ -1363,20 +1392,44 @@ def build_review_prompt(stock_name: str, stock_code: str, summary_text: str) -> 
 直接输出研判，用自然段落 + 关键处加粗，不要加大标题。"""
 
 
-def build_forecast_prompt(stock_name: str, stock_code: str, summary_text: str, kline_tail: list) -> str:
+def build_forecast_prompt(stock_name: str, stock_code: str, summary_text: str,
+                          kline_tail: list, backtest_result: dict = None) -> str:
     """构造走势预测 prompt，要求 LLM 输出结构化 JSON。
 
-    kline_tail: 最近若干条 {date, open, close, low, high} 记录，供 LLM 感知价格区间。
+    kline_tail:      最近若干条 {date, open, close, low, high} 记录，供 LLM 感知价格区间。
+    backtest_result: run_backtest() 的返回值，作为历史信号胜率参考。
     """
     kline_str = "\n".join(
         f"  {r.get('date')}: O={r.get('open')} H={r.get('high')} L={r.get('low')} C={r.get('close')}"
         for r in kline_tail if isinstance(r, dict)
     )
+
+    # 回测摘要：只取有统计数据的信号，列出 1/3/5 日胜率和均收益
+    backtest_str = ""
+    if backtest_result and isinstance(backtest_result, dict):
+        signals = backtest_result.get("signals") or {}
+        lines = []
+        for sig, v in signals.items():
+            if not isinstance(v, dict) or not v.get("stats"):
+                continue
+            stats = v["stats"]
+            parts = []
+            for d in ("1", "3", "5", "10", "20"):
+                s = stats.get(d)
+                if s and s.get("win_rate") is not None:
+                    parts.append(f"{d}日胜率{s['win_rate']}%/均收益{s['avg_return']}%")
+            if parts:
+                lines.append(f"  {sig}（触发{v.get('count',0)}次）：{'  '.join(parts)}")
+        if lines:
+            period = backtest_result.get("stock_days", "")
+            backtest_str = f"\n历史信号回测（{period}，共{backtest_result.get('total_days',0)}日）：\n" + "\n".join(lines)
+
     return f"""你是一位 A 股量化技术分析师。以下是 {stock_name}（{stock_code}）的量化分析摘要和近期 K 线数据。
 请基于这些信息，给出**走势预测**（这是模型推理的情景模拟，仅供研究参考，不构成投资建议）。
 
 量化分析摘要：
 {summary_text}
+{backtest_str}
 
 最近 K 线（OHLC）：
 {kline_str}
@@ -1402,6 +1455,7 @@ def build_forecast_prompt(stock_name: str, stock_code: str, summary_text: str, k
 
 注意：
 - 所有价格数字必须是合理的浮点数，基于最近收盘价 {kline_tail[-1].get('close') if kline_tail else '?'} 附近，幅度不超过 ±10%。
+- 回测数据中胜率高的信号意味着历史上该信号后续走势更可预测，请在制定预测时优先参考当前触发的高胜率信号。
 - next_day 的 high/low 要比 week_forecast[0] 的 high/low 更精确（日内区间更窄）。
 - week_forecast 每日 open 应等于或接近前一日 close（连续性）。
 - 只输出 JSON，不要任何其他文字。"""
@@ -1437,7 +1491,7 @@ def _fetch_kline(stock_code: str, log) -> object:
         from portal.data_cache import StockDataCache
         cache = StockDataCache()
 
-        start, end, mode = cache.calc_fetch_range(stock_code, days=120)
+        start, end, mode = cache.calc_fetch_range(stock_code, days=250)
 
         if mode == "up_to_date":
             df = cache.get_kline(stock_code)
@@ -1477,8 +1531,8 @@ def _fetch_kline(stock_code: str, log) -> object:
             end   = None
 
         else:  # full
-            log(f"🌐 首次全量拉取（最近 120 日）")
-            result = mgr.get_daily_data(stock_code, days=120)
+            log(f"🌐 首次全量拉取（最近 250 日）")
+            result = mgr.get_daily_data(stock_code, days=250)
             if isinstance(result, tuple):
                 df, source_name = result
             else:
