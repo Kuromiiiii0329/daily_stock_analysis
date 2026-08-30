@@ -25,21 +25,39 @@ Portal 是一个**独立的股票分析系统**，分两种使用模式：
 portal/
 ├── index.html                  主页面（单页应用，GitHub Pages 直接托管）
 ├── index-standalone.html       单文件版（所有 JS 内联，双击可直接打开）
-├── server.py                   本地增强服务（端口 7788，按需启动）
+├── server.py                   本地增强服务薄入口（端口 7788；main + 路径注入 + re-export srv/）
+├── srv/                        server 实现包（原 server.py 1578 行按职责拆分）
+│   ├── _config.py              常量 / 路径注入 / 日志设置（最先导入）
+│   ├── state.py                全局任务状态 _tasks / _tasks_lock
+│   ├── prompts.py              build_review_prompt / build_forecast_prompt
+│   ├── llm_gateway.py          LLM 调用闭包 / agent 环境映射 / 报告摘要
+│   ├── data_access.py          .env 加载 / K线获取 / 技术维度重算 / JSON 兜底
+│   ├── tasks.py                4 个 _run_*_task 后台任务
+│   └── http_handler.py         Handler（HTTP 路由 + 各 _handle_*，13 端点）
 ├── send_report.py              邮件发送脚本（GitHub Action 调用）
 ├── data_cache.py               数据缓存管理器（K线增量缓存 + 商品搜索缓存）
 ├── 启动本地服务.bat             Windows 双击启动 server.py
 ├── analyzers/                  深度分析引擎（全在 portal/ 内）
-│   ├── __init__.py             注册所有分析器
-│   ├── base.py                 BaseAnalyzer 基类 + 数据类定义
-│   ├── technical.py            技术面（MA/MACD/RSI/KDJ/布林带/超买超卖/背离/波浪/缠论）
+│   ├── __init__.py             注册所有分析器（ANALYZER_REGISTRY）
+│   ├── base.py                 BaseAnalyzer 基类 + Section/DimensionResult 数据类
+│   ├── _common.py              共享工具：extract_llm_score / strip_score_json
+│   ├── technical/              技术面（包）：MA/MACD/RSI/KDJ/布林/超买超卖/背离/量价/形态/波浪/缠论
+│   │   ├── __init__.py         TechnicalAnalyzer 类壳（analyze 编排 + 薄委托）
+│   │   ├── indicators.py       compute_indicators / normalize_volume_scale
+│   │   ├── sections_basic.py   ma/macd/rsi/kdj/bollinger/volume/overbought（纯量化）
+│   │   ├── sections_data.py    chip/turnover/margin（依赖 akshare）
+│   │   ├── sections_llm.py     pattern/wave/chan/llm_tech（LLM）
+│   │   └── divergence.py       背离检测引擎（分形+ATR+成熟度状态机）
 │   ├── fundamental.py          基本面（财报/成长/分红/主力资金/估值）
-│   ├── industry.py             产业链（板块真实数据 + LLM识别关键词 + 搜索）
+│   ├── industry/               产业链（包）
+│   │   ├── __init__.py         IndustryAnalyzer 类壳（analyze 编排 + 薄委托）
+│   │   ├── sectors.py          板块分析（真实数据，不依赖 LLM）
+│   │   └── chain.py            产业链分析（LLM + 搜索）+ 大宗商品映射
 │   ├── sector.py               板块数据层（efinance 个股→板块 + 板块K线 + 缓存降级）
+│   ├── market.py               轻量大盘分析器（上证+创业板，复用技术指标+MA250年线）
 │   └── merger.py               合并报告（技术40% + 基本面40% + 产业链20%）
 ├── report_html.py              独立 HTML 报告生成器（个股+大盘两套模板,ECharts,去重,自动打开）
 ├── llm_notes.py                逐指标 LLM 点评（偏多/偏空/影响,双模式+交易日缓存）
-├── analyzers/market.py         轻量大盘分析器（上证+创业板,复用技术指标+MA250年线）
 ├── lib/                        捆绑的依赖库（portal 独立运行所需）
 │   ├── src/                    核心分析模块副本
 │   └── data_provider/          数据源模块副本
@@ -95,10 +113,10 @@ portal/
 
 | 文件 | 职责 | 修改场景 |
 |------|------|----------|
-| `server.py` | HTTP 服务（7788端口）：`/health` `/save` `/run` `/analyze` + SSE流 | 新增 API 接口 |
+| `server.py` + `srv/` 包 | HTTP 服务（7788端口）：`/health` `/save` `/run` `/analyze` + SSE流。server.py 为薄入口，实现在 srv/（http_handler/tasks/llm_gateway/prompts/data_access/…） | 新增 API 接口改 `srv/http_handler.py`；新增后台任务改 `srv/tasks.py` |
 | `data_cache.py` | K 线增量缓存 + 商品搜索缓存（TTL自适应） | 调整缓存策略 |
 | `send_report.py` | 读取 `reports/*.md`，发送 HTML 邮件 | 修改邮件格式 |
-| `analyzers/technical.py` | MA/MACD/RSI/KDJ/布林带/量价 + **超买超卖综合(RSI+KDJ+WR+布林)/背离引擎(分形摆动点+常规&隐藏背离+成熟度状态机 迹象浮现→进行中→已确认)** + 形态/波浪/缠论（LLM） | 新增技术指标 |
+| `analyzers/technical/` | 包：MA/MACD/RSI/KDJ/布林带/量价 + **超买超卖综合(RSI+KDJ+WR+布林)/背离引擎(分形摆动点+常规&隐藏背离+成熟度状态机 迹象浮现→进行中→已确认)** + 形态/波浪/缠论（LLM）。子模块见 indicators/sections_basic/sections_data/sections_llm/divergence | 新增技术指标改对应子模块，section.key 保持不变 |
 | `analyzers/fundamental.py` | 财报/成长/分红/主力资金/估值（复用 fundamental_adapter） | 新增财务指标 |
 | `analyzers/industry.py` | 板块归属/景气/相对强弱（真实数据）+ 产业链关键词/竞争/政策（LLM） | 新增行业关键词模板 |
 | `analyzers/sector.py` | 板块数据层：efinance 个股→板块 + 板块K线 + 全市场快照 + 缓存降级 | 调整黑名单/数据源 |
@@ -178,7 +196,7 @@ python portal/server.py
 
 | 维度 | 文件 | 默认子模块 | 数据来源 |
 |------|------|-----------|----------|
-| 技术面 | `technical.py` | MA/MACD/RSI/KDJ/布林带/量价 | 本地K线缓存 → 网络 |
+| 技术面 | `technical/`（包） | MA/MACD/RSI/KDJ/布林带/量价 | 本地K线缓存 → 网络 |
 | 基本面 | `fundamental.py` | 财报/成长/估值/主力资金 | fundamental_adapter |
 | 产业链 | `industry.py` + `sector.py` | **所属板块/板块景气/相对强弱**（真实数据）+ 商品价格/产业链地位/竞争/政策（LLM） | efinance 板块数据 + LLM |
 
@@ -204,7 +222,7 @@ python portal/server.py
 
 ### 新增分析器
 
-1. 在 `portal/analyzers/` 新建 `my_dim.py`，继承 `BaseAnalyzer`，实现 `analyze()` 方法
+1. 在 `portal/analyzers/` 新建 `my_dim.py`（或 `my_dim/` 包），继承 `BaseAnalyzer`，实现 `analyze()` 方法
 2. 在 `portal/analyzers/__init__.py` 的 `ANALYZER_REGISTRY` 中注册
 3. 在 `portal/js/tabs/run.js` 的 `DIM_DEFS` 中添加维度定义
 
@@ -268,41 +286,15 @@ python -m http.server 8080
 
 ### 重新生成单文件版
 
-每次修改 `js/` 文件后运行：
+`js/` 是源，`index-standalone.html` 是构建产物。每次修改 `js/` 下任何文件后运行：
 ```bash
 cd C:\Users\I762120\Desktop\incident\daily
-python << 'EOF'
-from pathlib import Path
-import re
-
-PORTAL = Path("portal")
-ORDER = [
-    "js/components/toast.js", "js/components/modal.js",
-    "js/components/report-view.js", "js/store.js",
-    "js/tabs/watchlist.js", "js/tabs/settings.js",
-    "js/tabs/guide.js", "js/tabs/run.js", "js/app.js",
-]
-COLLIDING = {"SERVER"}
-parts = []
-for path, prefix in zip(ORDER, [None,"MODAL",None,None,None,None,None,"RUN","APP"]):
-    content = (PORTAL / path).read_text(encoding="utf-8")
-    lines = []
-    for line in content.splitlines():
-        s = line.strip()
-        if s.startswith("import ") and "from " in s: continue
-        for kw in ("export const ","export class ","export function "):
-            if s.startswith(kw): line = line.replace(kw, kw[7:], 1); break
-        if prefix:
-            for name in COLLIDING:
-                line = re.sub(rf'\bconst {name}\b', f'const {name}_{prefix}', line)
-                line = re.sub(rf'(?<!const ){name}(?!_[A-Z])\b', f'{name}_{prefix}', line)
-        lines.append(line)
-    parts.append(f"\n// ── {path} ──"); parts.append("\n".join(lines))
-
-js = "\n".join(parts)
-html = (PORTAL / "index.html").read_text(encoding="utf-8")
-new_html = html.replace('<script type="module" src="js/app.js"></script>', f'<script>\n{js}\n</script>')
-(PORTAL / "index-standalone.html").write_text(new_html, encoding="utf-8")
-print(f"✅ 生成 index-standalone.html ({len(new_html)//1024} KB)")
-EOF
+python portal/build_standalone.py
 ```
+
+构建脚本 `build_standalone.py` 会按 `ORDER_WITH_PREFIX` 顺序把各 JS 模块内联进 `index.html`：去掉 `import`、剥离 `export` 前缀、按依赖顺序拼接成单个 `<script>`。
+
+**⚠️ 新增 JS 文件时必须**：
+1. 把新文件加进 `build_standalone.py` 的 `ORDER_WITH_PREFIX`，且排在其使用者**之前**（共享常量/工具如 `js/config.js` 排最前）。
+2. 确保新文件的顶层 `const/class/function` 名**全局唯一**——构建产物是单一作用域，重名会导致 `Identifier already declared` 运行时错误，而构建脚本**不会报错**（静默产出坏文件）。
+   （历史上唯一冲突的 `SERVER` 已统一到 `js/config.js`，故 `COLLIDING` 现为空集。）
