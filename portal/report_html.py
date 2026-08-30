@@ -317,33 +317,6 @@ def _render_forecast_html(forecast: dict, kline_data: list, chart_id: str) -> tu
 
 
 # ── 个股报告 ──────────────────────────────────────────────────
-    """渲染一组 section 卡片（含 LLM 打分说明块）。"""
-    parts = []
-    for s in sections:
-        sig = SIGNAL_CFG.get(s.get("signal", "hold"), SIGNAL_CFG["hold"])
-        note_html = ""
-        note = (llm_notes or {}).get(s.get("key"))
-        if note and isinstance(note, dict):
-            nsig = SIGNAL_CFG.get(note.get("signal", "hold"), SIGNAL_CFG["hold"])
-            nscore = note.get("score", "")
-            reason = _esc(note.get("reason", ""))
-            impact = _esc(note.get("impact", ""))
-            note_html = (
-                f'<div class="note" style="border-color:{nsig["dot"]};background:{nsig["bg"]}">'
-                f'🤖 <b style="color:{nsig["text"]}">{nsig["label"]}'
-                + (f' · {nscore}' if nscore != "" else '') + '</b>'
-                + (f' — {reason}' if reason else '')
-                + (f'（影响：{impact}）' if impact else '') + '</div>'
-            )
-        parts.append(
-            f'<div class="sec"><div class="sec-hd"><span>{_esc(s.get("title"))}</span>'
-            f'<span class="badge" style="background:{sig["bg"]};color:{sig["text"]}">{sig["label"]} · {s.get("score",50)}</span></div>'
-            f'<div class="sec-bd">{_md_to_html(s.get("content",""))}{note_html}</div></div>'
-        )
-    return "\n".join(parts)
-
-
-# ── 个股报告 ──────────────────────────────────────────────────
 def render_stock_report(report: dict, llm_notes: Optional[dict] = None) -> Path:
     llm_notes = llm_notes or report.get("llm_notes") or {}
     code = str(report.get("stock_code", "")).strip() or "unknown"
