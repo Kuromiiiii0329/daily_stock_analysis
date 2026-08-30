@@ -5,7 +5,7 @@
  *   - 添加时若本地服务在线，自动查 /quote 拿名称写回 store
  *   - 实时行情（价格/涨跌幅）在 server 在线时叠加显示
  */
-const SERVER = 'http://127.0.0.1:7788';
+import { SERVER } from '../config.js';
 
 export class WatchlistTab {
   constructor(container, store, toast) {

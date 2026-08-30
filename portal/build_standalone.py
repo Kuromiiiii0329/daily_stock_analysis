@@ -14,6 +14,7 @@ from pathlib import Path
 PORTAL = Path(__file__).parent
 
 ORDER_WITH_PREFIX = [
+    ("js/config.js",                 None),
     ("js/components/toast.js",       None),
     ("js/components/modal.js",       "MODAL"),
     ("js/components/report-view.js", None),
@@ -26,8 +27,11 @@ ORDER_WITH_PREFIX = [
     ("js/app.js",                    "APP"),
 ]
 
-# 顶层 const 名在合并后会冲突，按模块重命名
-COLLIDING = {"SERVER"}
+# 顶层 const 名在合并后会冲突，按模块重命名。
+# 注：SERVER 原是唯一冲突常量，现已统一到 js/config.js（排在最前、只声明一次），
+#     各文件改为 import 后 build 会删掉 import 行，标准合并即无重复声明，故 COLLIDING 清空。
+COLLIDING = set()
+
 
 
 def build():

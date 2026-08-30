@@ -2,6 +2,7 @@
  * app.js — 主入口：Tab 路由 + 服务状态轮询 + 底栏 + Modal
  */
 import { store }       from './store.js';
+import { SERVER }      from './config.js';
 import { WatchlistTab } from './tabs/watchlist.js';
 import { SettingsTab }  from './tabs/settings.js';
 import { RunTab }       from './tabs/run.js';
@@ -9,8 +10,6 @@ import { GuideTab }     from './tabs/guide.js';
 import { ChatTab }      from './tabs/chat.js';
 import { toast }        from './components/toast.js';
 import { modal }        from './components/modal.js';
-
-const SERVER = 'http://127.0.0.1:7788';
 
 const TABS = [
   { id: 'run',       icon: '▶',  label: '立即运行', Cls: RunTab },
