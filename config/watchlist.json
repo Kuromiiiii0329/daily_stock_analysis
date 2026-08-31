@@ -1,3 +1,22 @@
 {
-  "probe_test": true
+  "_schema_version": "1",
+  "_comment": "由 portal/index.html 生成，提交到仓库后被 portal-daily-analysis.yml 读取",
+  "updated_at": "2026-08-31T14:46:40.291Z",
+  "report_type": "simple",
+  "market_review_enabled": true,
+  "market_review_region": "cn",
+  "analysis_delay": 0,
+  "max_workers": 3,
+  "force_run": false,
+  "llm_note_mode": "per_indicator",
+  "auto_open_html": true,
+  "email": {
+    "enabled": true,
+    "subject_prefix": "A股智能分析"
+  },
+  "stock_list": [
+    "300058",
+    "000831",
+    "002466"
+  ]
 }

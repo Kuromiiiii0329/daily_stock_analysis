@@ -1,0 +1,254 @@
+{
+  "code": "300058",
+  "updated_at": "2026-08-31T20:53:01.048837+08:00",
+  "result": {
+    "signals": {
+      "MACD金叉": {
+        "count": 9,
+        "stats": {
+          "1": {
+            "win_rate": 44.4,
+            "avg_return": -1.35,
+            "valid": 9
+          },
+          "3": {
+            "win_rate": 44.4,
+            "avg_return": -1.02,
+            "valid": 9
+          },
+          "5": {
+            "win_rate": 55.6,
+            "avg_return": 4.13,
+            "valid": 9
+          },
+          "10": {
+            "win_rate": 55.6,
+            "avg_return": 18.93,
+            "valid": 9
+          },
+          "20": {
+            "win_rate": 77.8,
+            "avg_return": 33.39,
+            "valid": 9
+          }
+        }
+      },
+      "MACD死叉": {
+        "count": 9,
+        "stats": {
+          "1": {
+            "win_rate": 55.6,
+            "avg_return": 0.08,
+            "valid": 9
+          },
+          "3": {
+            "win_rate": 55.6,
+            "avg_return": 4.68,
+            "valid": 9
+          },
+          "5": {
+            "win_rate": 77.8,
+            "avg_return": 7.46,
+            "valid": 9
+          },
+          "10": {
+            "win_rate": 50.0,
+            "avg_return": 17.18,
+            "valid": 8
+          },
+          "20": {
+            "win_rate": 62.5,
+            "avg_return": 20.81,
+            "valid": 8
+          }
+        }
+      },
+      "RSI超卖(<30)": {
+        "count": 26,
+        "stats": {
+          "1": {
+            "win_rate": 61.5,
+            "avg_return": 0.75,
+            "valid": 26
+          },
+          "3": {
+            "win_rate": 72.0,
+            "avg_return": 2.96,
+            "valid": 25
+          },
+          "5": {
+            "win_rate": 56.5,
+            "avg_return": 2.74,
+            "valid": 23
+          },
+          "10": {
+            "win_rate": 22.7,
+            "avg_return": 0.74,
+            "valid": 22
+          },
+          "20": {
+            "win_rate": 59.1,
+            "avg_return": 8.9,
+            "valid": 22
+          }
+        }
+      },
+      "RSI超买(>70)": {
+        "count": 36,
+        "stats": {
+          "1": {
+            "win_rate": 61.1,
+            "avg_return": 2.28,
+            "valid": 36
+          },
+          "3": {
+            "win_rate": 69.4,
+            "avg_return": 7.52,
+            "valid": 36
+          },
+          "5": {
+            "win_rate": 58.3,
+            "avg_return": 11.9,
+            "valid": 36
+          },
+          "10": {
+            "win_rate": 58.3,
+            "avg_return": 20.83,
+            "valid": 36
+          },
+          "20": {
+            "win_rate": 58.6,
+            "avg_return": 33.86,
+            "valid": 29
+          }
+        }
+      },
+      "KDJ金叉": {
+        "count": 0,
+        "note": "历史未触发"
+      },
+      "放量上涨": {
+        "count": 2,
+        "stats": {
+          "1": {
+            "win_rate": 0.0,
+            "avg_return": -1.22,
+            "valid": 2
+          },
+          "3": {
+            "win_rate": 50.0,
+            "avg_return": -3.0,
+            "valid": 2
+          },
+          "5": {
+            "win_rate": 100.0,
+            "avg_return": 6.73,
+            "valid": 2
+          },
+          "10": {
+            "win_rate": 100.0,
+            "avg_return": 12.54,
+            "valid": 2
+          },
+          "20": {
+            "win_rate": 100.0,
+            "avg_return": 13.41,
+            "valid": 2
+          }
+        }
+      },
+      "放量下跌": {
+        "count": 1,
+        "stats": {
+          "1": {
+            "win_rate": null,
+            "avg_return": null,
+            "valid": 0
+          },
+          "3": {
+            "win_rate": null,
+            "avg_return": null,
+            "valid": 0
+          },
+          "5": {
+            "win_rate": null,
+            "avg_return": null,
+            "valid": 0
+          },
+          "10": {
+            "win_rate": null,
+            "avg_return": null,
+            "valid": 0
+          },
+          "20": {
+            "win_rate": null,
+            "avg_return": null,
+            "valid": 0
+          }
+        }
+      },
+      "均线多头排列": {
+        "count": 37,
+        "stats": {
+          "1": {
+            "win_rate": 54.1,
+            "avg_return": 0.04,
+            "valid": 37
+          },
+          "3": {
+            "win_rate": 45.9,
+            "avg_return": -0.29,
+            "valid": 37
+          },
+          "5": {
+            "win_rate": 35.1,
+            "avg_return": -1.16,
+            "valid": 37
+          },
+          "10": {
+            "win_rate": 21.6,
+            "avg_return": -5.66,
+            "valid": 37
+          },
+          "20": {
+            "win_rate": 25.0,
+            "avg_return": -11.33,
+            "valid": 28
+          }
+        }
+      },
+      "价格跌破布林下轨": {
+        "count": 3,
+        "stats": {
+          "1": {
+            "win_rate": 66.7,
+            "avg_return": 2.19,
+            "valid": 3
+          },
+          "3": {
+            "win_rate": 100.0,
+            "avg_return": 7.53,
+            "valid": 3
+          },
+          "5": {
+            "win_rate": 100.0,
+            "avg_return": 11.79,
+            "valid": 3
+          },
+          "10": {
+            "win_rate": 33.3,
+            "avg_return": 10.82,
+            "valid": 3
+          },
+          "20": {
+            "win_rate": 66.7,
+            "avg_return": 9.8,
+            "valid": 3
+          }
+        }
+      }
+    },
+    "total_days": 168,
+    "stock_days": "2025-12-19 ~ 2026-08-28"
+  }
+}
