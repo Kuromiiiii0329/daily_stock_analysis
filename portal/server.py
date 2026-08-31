@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-portal/server.py — 本地配置写入 + 分析触发服务
+portal/server.py — 本地配置写入 + 分析触发服务（薄入口）
 
 接口：
   GET  /health          健康检查
@@ -14,22 +14,22 @@ portal/server.py — 本地配置写入 + 分析触发服务
 启动：
     cd C:\\Users\\I762120\\Desktop\\incident\\daily
     python portal/server.py
+
+—— 模块化重构说明 ——
+原单文件 server.py（1578行）已按职责拆分到 srv/ 子包（_config/state/prompts/
+llm_gateway/data_access/tasks/http_handler）。本文件保留为薄入口以维持
+`python portal/server.py` 启动方式不变，并 re-export 全部符号，任何
+`from server import X` / `import server; server.X` 的历史用法仍然可用。
 """
-import json
-import logging
-import os
-import queue
-import subprocess
-import sys
-import threading
-import time
-import uuid
-from datetime import datetime, timezone, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
+from __future__ import annotations
 
-PORT = int(os.environ.get("PORTAL_SERVER_PORT", 7788))
+# ⚠️ 必须最先导入 srv：其 _config 顶层完成 sys.path 注入（portal/lib 优先），
+#    这是所有 analyzer/data_provider 裸导入的前提。
+import srv
+from srv import *          # noqa: F401,F403  re-export 全部公开符号（含 Handler/常量/任务函数）
+from srv import Handler, PORT, CONFIG_PATH, logger
 
+<<<<<<< HEAD
 ALLOWED_ENV_KEYS = {
     "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "LITELLM_MODEL",
     "HAI_BASE_URL", "HAI_API_KEY", "HAI_MODEL",
@@ -1583,6 +1583,9 @@ def _fetch_kline(stock_code: str, log) -> object:
         except Exception:
             pass
         return None
+=======
+from http.server import HTTPServer
+>>>>>>> b55dd93e27f8ffa59d0b5d78d92d3585d4d74db0
 
 
 def main():
