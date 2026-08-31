@@ -2,7 +2,7 @@
  * components/modal.js — 保存配置弹窗
  */
 
-const SERVER = 'http://127.0.0.1:7788';
+import { SERVER } from '../config.js';
 
 class Modal {
   constructor() {

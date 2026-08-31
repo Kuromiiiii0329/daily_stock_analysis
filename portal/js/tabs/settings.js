@@ -2,7 +2,7 @@
  * tabs/settings.js — 分析参数设置（纯静态，无需 server）
  * Toggle 用 JS 驱动，不依赖 Tailwind peer（innerHTML 里 peer 无效）
  */
-const SERVER = 'http://127.0.0.1:7788';
+import { SERVER } from '../config.js';
 
 export class SettingsTab {
   constructor(container, store, toast) {
