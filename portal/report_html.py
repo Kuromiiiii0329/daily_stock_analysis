@@ -289,7 +289,7 @@ def _render_forecast_html(forecast: dict, kline_data: list, chart_id: str) -> tu
     return html, js
 
 
-# ── 个股报告 ──────────────────────────────────────────────────
+def _render_sections_html(sections: list, llm_notes: Optional[dict] = None) -> str:
     """渲染一组 section 卡片（含 LLM 打分说明块）。"""
     parts = []
     for s in sections:

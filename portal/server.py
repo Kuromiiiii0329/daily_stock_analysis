@@ -539,8 +539,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "env": configured})
 
     def _handle_set_env(self, payload: dict):
-        """POST /env — 写入白名单内的 key 到 .env 文件，保留注释，立即生效。"""
-        updates = payload.get("env", {})
+        """POST /env — 写入白名单内的 key 到 .env 文件，保留注释，立即生效。
+
+        兼容两种 payload 格式：
+          - {"env": {"KEY": "value", ...}}   （旧格式，带 env 包装）
+          - {"KEY": "value", ...}             （前端 settings.js 实际发送的格式）
+        """
+        updates = payload.get("env", payload)
         if not isinstance(updates, dict):
             self._send_json(400, {"ok": False, "error": "env 字段必须是对象"})
             return
@@ -1200,8 +1205,28 @@ def _run_market_review_task(task_id: str, open_report: bool = True):
             _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
 
 
+def _ensure_env_file():
+    """确保项目根目录存在 .env 文件；不存在时从 .env.example 复制创建。"""
+    env_file = PROJECT_ROOT / ".env"
+    if env_file.exists():
+        return
+    example = PROJECT_ROOT / ".env.example"
+    try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        if example.exists():
+            env_file.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+            logger.info("✅ 已从 .env.example 自动创建 %s", env_file)
+        else:
+            env_file.write_text("", encoding="utf-8")
+            logger.info("✅ 已自动创建空 %s（未找到 .env.example）", env_file)
+    except Exception as e:
+        logger.warning("自动创建 %s 失败: %s", env_file, e)
+
+
 def _load_dotenv():
     """读取配置文件目录 .env，注入环境变量（不覆盖已有值）。"""
+    # 确保 .env 存在（不存在则自动创建）
+    _ensure_env_file()
     # 优先 portal/lib/.env，其次项目根 .env
     for env_file in [LIB_DIR / ".env", PROJECT_ROOT / ".env"]:
         if not env_file.exists():
@@ -1561,6 +1586,8 @@ def _fetch_kline(stock_code: str, log) -> object:
 
 
 def main():
+    # 启动时确保 .env 存在（不存在则自动创建）
+    _ensure_env_file()
     server = HTTPServer(("127.0.0.1", PORT), Handler)
     logger.info("=" * 50)
     logger.info("Portal 本地服务已启动")

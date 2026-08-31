@@ -1,6 +1,6 @@
 {
   "code": "002466",
-  "updated_at": "2026-08-31T20:53:01.793660+08:00",
+  "updated_at": "2026-08-31T23:30:43.413446+08:00",
   "result": {
     "signals": {
       "MACD金叉": {
@@ -27,9 +27,9 @@
             "valid": 6
           },
           "20": {
-            "win_rate": 40.0,
-            "avg_return": -0.38,
-            "valid": 5
+            "win_rate": 50.0,
+            "avg_return": 0.22,
+            "valid": 6
           }
         }
       },
@@ -87,9 +87,9 @@
             "valid": 31
           },
           "20": {
-            "win_rate": 63.3,
-            "avg_return": 3.69,
-            "valid": 30
+            "win_rate": 64.5,
+            "avg_return": 3.73,
+            "valid": 31
           }
         }
       },
@@ -136,27 +136,27 @@
         "note": "历史未触发"
       },
       "均线多头排列": {
-        "count": 45,
+        "count": 47,
         "stats": {
           "1": {
-            "win_rate": 50.0,
-            "avg_return": 0.22,
-            "valid": 44
+            "win_rate": 48.9,
+            "avg_return": 0.2,
+            "valid": 47
           },
           "3": {
-            "win_rate": 59.5,
-            "avg_return": 0.2,
-            "valid": 42
+            "win_rate": 57.8,
+            "avg_return": -0.04,
+            "valid": 45
           },
           "5": {
-            "win_rate": 55.0,
-            "avg_return": 0.89,
-            "valid": 40
+            "win_rate": 51.1,
+            "avg_return": 0.56,
+            "valid": 45
           },
           "10": {
-            "win_rate": 54.1,
-            "avg_return": 2.34,
-            "valid": 37
+            "win_rate": 56.8,
+            "avg_return": 2.04,
+            "valid": 44
           },
           "20": {
             "win_rate": 43.2,
@@ -196,7 +196,7 @@
         }
       }
     },
-    "total_days": 159,
-    "stock_days": "2025-12-22 ~ 2026-08-18"
+    "total_days": 168,
+    "stock_days": "2025-12-22 ~ 2026-08-31"
   }
 }
