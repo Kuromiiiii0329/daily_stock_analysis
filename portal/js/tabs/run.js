@@ -16,7 +16,8 @@
  */
 
 import { ReportView } from '../components/report-view.js';
-import { SERVER } from '../config.js';
+
+const SERVER = 'http://127.0.0.1:7788';
 
 const DIM_DEFS = {
   technical: {

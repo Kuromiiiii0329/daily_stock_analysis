@@ -9,7 +9,7 @@
  * 纯静态模式（server 离线）时优雅提示"需启动本地服务"。
  */
 
-import { SERVER } from '../config.js';
+const SERVER = 'http://127.0.0.1:7788';
 const SESSION_KEY = 'dsa_chat_session';
 
 export class ChatTab {
