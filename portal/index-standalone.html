@@ -584,10 +584,14 @@ class ReportView {
     const chart = echarts.init(el);
     const data  = rpt.kline_data.slice(-60);
     const dates = data.map(d => d.date ? d.date.slice(5) : '');
-    const close = data.map(d => d.close ?? null);
-    const ma5   = data.map(d => d.ma5   ?? null);
-    const ma20  = data.map(d => d.ma20  ?? null);
-    const ma60  = data.map(d => d.ma60  ?? null);
+    const close  = data.map(d => d.close  ?? null);
+    const ma5    = data.map(d => d.ma5    ?? null);
+    const ma10   = data.map(d => d.ma10   ?? null);
+    const ma20   = data.map(d => d.ma20   ?? null);
+    const ma30   = data.map(d => d.ma30   ?? null);
+    const ma60   = data.map(d => d.ma60   ?? null);
+    const ma120  = data.map(d => d.ma120  ?? null);
+    const ma250  = data.map(d => d.ma250  ?? null);
     const mkLine = (name, vals, color, w = 1.5) => ({
       name, type: 'line', data: vals, smooth: false, symbol: 'none',
       lineStyle: { color, width: w }, itemStyle: { color },
@@ -609,7 +613,7 @@ class ReportView {
         },
       },
       legend: {
-        data: ['收盘价', 'MA5', 'MA20', 'MA60'],
+        data: ['收盘价', 'MA5', 'MA10', 'MA20', 'MA30', 'MA60', 'MA120', 'MA250'],
         right: 8, top: 2,
         textStyle: { fontSize: 10, color: '#6b7280' },
         itemWidth: 12, itemHeight: 3,
@@ -628,8 +632,12 @@ class ReportView {
       series: [
         mkLine('收盘价', close, '#3b82f6', 2),
         mkLine('MA5',   ma5,   '#f97316', 1),
+        mkLine('MA10',  ma10,  '#facc15', 1),
         mkLine('MA20',  ma20,  '#ef4444', 1),
+        mkLine('MA30',  ma30,  '#f472b6', 1),
         mkLine('MA60',  ma60,  '#8b5cf6', 1),
+        mkLine('MA120', ma120, '#06b6d4', 1),
+        mkLine('MA250', ma250, '#6b7280', 1),
       ],
     });
   }

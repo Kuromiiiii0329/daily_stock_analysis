@@ -221,22 +221,30 @@ def _run_deep_analysis_task(
                         col_map[c] = 'close'
                     elif lc == 'ma5':
                         col_map[c] = 'ma5'
+                    elif lc == 'ma10':
+                        col_map[c] = 'ma10'
                     elif lc == 'ma20':
                         col_map[c] = 'ma20'
+                    elif lc == 'ma30':
+                        col_map[c] = 'ma30'
+                    elif lc == 'ma60':
+                        col_map[c] = 'ma60'
+                    elif lc == 'ma120':
+                        col_map[c] = 'ma120'
                     elif lc == 'ma250':
                         col_map[c] = 'ma250'
                 kline_df = kline_df.rename(columns=col_map)
 
-                # 如果缺少 ma5/ma20/ma250，现场计算
+                # 如果缺少均线，现场计算
                 if 'close' in kline_df.columns:
-                    if 'ma5' not in kline_df.columns:
-                        kline_df['ma5'] = kline_df['close'].rolling(5, min_periods=1).mean().round(2)
-                    if 'ma20' not in kline_df.columns:
-                        kline_df['ma20'] = kline_df['close'].rolling(20, min_periods=1).mean().round(2)
-                    if 'ma250' not in kline_df.columns:
-                        kline_df['ma250'] = kline_df['close'].rolling(250, min_periods=200).mean().round(2)
+                    for period, min_p in [(5,1),(10,1),(20,1),(30,1),(60,1),(120,60),(250,200)]:
+                        col = f'ma{period}'
+                        if col not in kline_df.columns:
+                            kline_df[col] = kline_df['close'].rolling(period, min_periods=min_p).mean().round(2)
 
-                keep_cols = [c for c in ('date', 'open', 'high', 'low', 'close', 'ma5', 'ma20', 'ma250') if c in kline_df.columns]
+                keep_cols = [c for c in ('date', 'open', 'high', 'low', 'close',
+                                         'ma5', 'ma10', 'ma20', 'ma30', 'ma60', 'ma120', 'ma250')
+                             if c in kline_df.columns]
                 kline_df = kline_df[keep_cols].tail(250)
 
                 # 序列化为干净的 list[dict]，NaN → None
