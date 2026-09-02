@@ -23,6 +23,7 @@ portal/analyzers/technical/  技术面分析器（包）
 from __future__ import annotations
 
 import logging
+import time
 
 import pandas as pd
 
@@ -62,7 +63,7 @@ class TechnicalAnalyzer(BaseAnalyzer):
     DEFAULT_MODULES = ["ma_system", "macd", "rsi", "kdj", "bollinger",
                        "overbought", "divergence", "volume", "llm_tech"]
 
-    def analyze(self, stock_code, stock_name, df, modules, llm_call, search):
+    def analyze(self, stock_code, stock_name, df, modules, llm_call, search, log=None):
         result = DimensionResult(dimension=self.dimension, name=self.name)
 
         if df is None or df.empty or len(df) < 20:
@@ -71,6 +72,14 @@ class TechnicalAnalyzer(BaseAnalyzer):
             result.signal = "hold"
             return result
 
+        def _timed(name, fn):
+            t0 = time.perf_counter()
+            sec = fn()
+            elapsed = time.perf_counter() - t0
+            if log:
+                log(f"  ⏱ [{name}] {elapsed*1000:.0f}ms")
+            return sec
+
         try:
             df = df.copy().sort_values("date").reset_index(drop=True)
             self._df = df          # 保留引用，供背离渲染时取日期
@@ -78,35 +87,35 @@ class TechnicalAnalyzer(BaseAnalyzer):
             sections = []
 
             if "ma_system" in modules:
-                sections.append(self._analyze_ma(df, stock_code))
+                sections.append(_timed("ma_system",   lambda: self._analyze_ma(df, stock_code)))
             if "macd" in modules:
-                sections.append(self._analyze_macd(df))
+                sections.append(_timed("macd",        lambda: self._analyze_macd(df)))
             if "rsi" in modules:
-                sections.append(self._analyze_rsi(df))
+                sections.append(_timed("rsi",         lambda: self._analyze_rsi(df)))
             if "kdj" in modules:
-                sections.append(self._analyze_kdj(df))
+                sections.append(_timed("kdj",         lambda: self._analyze_kdj(df)))
             if "bollinger" in modules:
-                sections.append(self._analyze_bollinger(df))
+                sections.append(_timed("bollinger",   lambda: self._analyze_bollinger(df)))
             if "overbought" in modules:
-                sections.append(self._analyze_overbought(df))
+                sections.append(_timed("overbought",  lambda: self._analyze_overbought(df)))
             if "divergence" in modules:
-                sections.append(self._analyze_divergence(df))
+                sections.append(_timed("divergence",  lambda: self._analyze_divergence(df)))
             if "volume" in modules:
-                sections.append(self._analyze_volume(df))
+                sections.append(_timed("volume",      lambda: self._analyze_volume(df)))
             if "pattern" in modules and llm_call:
-                sections.append(self._analyze_pattern_llm(df, stock_name, llm_call))
+                sections.append(_timed("pattern",     lambda: self._analyze_pattern_llm(df, stock_name, llm_call)))
             if "wave" in modules and llm_call:
-                sections.append(self._analyze_wave_llm(df, stock_name, llm_call))
+                sections.append(_timed("wave",        lambda: self._analyze_wave_llm(df, stock_name, llm_call)))
             if "chan" in modules and llm_call:
-                sections.append(self._analyze_chan_llm(df, stock_name, llm_call))
+                sections.append(_timed("chan",        lambda: self._analyze_chan_llm(df, stock_name, llm_call)))
             if "chip" in modules:
-                sections.append(self._analyze_chip(df, stock_code))
+                sections.append(_timed("chip",        lambda: self._analyze_chip(df, stock_code)))
             if "turnover" in modules:
-                sections.append(self._analyze_turnover(df))
+                sections.append(_timed("turnover",    lambda: self._analyze_turnover(df)))
             if "margin" in modules:
-                sections.append(self._analyze_margin(df, stock_code))
+                sections.append(_timed("margin",      lambda: self._analyze_margin(df, stock_code)))
             if "llm_tech" in modules and llm_call:
-                sections.append(self._analyze_llm_tech(df, stock_name, llm_call, sections))
+                sections.append(_timed("llm_tech",    lambda: self._analyze_llm_tech(df, stock_name, llm_call, sections)))
 
             # 过滤掉降级/无真实数据返回 None 的子模块（不出假情报）
             sections = [s for s in sections if s is not None]

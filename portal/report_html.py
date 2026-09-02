@@ -516,13 +516,17 @@ def open_in_browser(path: Path, log=None) -> bool:
     try:
         ok = webbrowser.open(Path(path).as_uri())
         msg = f"🌐 已在浏览器打开报告：{path}" if ok else f"⚠️ 浏览器打开失败，报告已生成于：{path}"
-        if log: log(msg)
-        logger.info(msg)
+        if log:
+            log(msg)
+        else:
+            logger.info(msg)
         return bool(ok)
     except Exception as e:
         msg = f"⚠️ 无法自动打开浏览器（{e}），报告已生成于：{path}"
-        if log: log(msg)
-        logger.warning(msg)
+        if log:
+            log(msg)
+        else:
+            logger.warning(msg)
         return False
 
 

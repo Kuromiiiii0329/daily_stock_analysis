@@ -150,7 +150,7 @@ def _run_deep_analysis_task(
             log(f"🔍 [{analyzer.name}] 开始分析，子模块：{active_modules}")
 
             try:
-                dim_result = analyzer.analyze(
+                kwargs = dict(
                     stock_code=stock_code,
                     stock_name=stock_name,
                     df=df,
@@ -158,6 +158,10 @@ def _run_deep_analysis_task(
                     llm_call=llm_call,
                     search=search_fn,
                 )
+                import inspect
+                if 'log' in inspect.signature(analyzer.analyze).parameters:
+                    kwargs['log'] = log
+                dim_result = analyzer.analyze(**kwargs)
                 if dim_result.error:
                     log(f"⚠️  [{analyzer.name}] 分析异常：{dim_result.error}")
                 else:
