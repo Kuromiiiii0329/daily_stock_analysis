@@ -35,8 +35,17 @@ from http.server import HTTPServer
 from pathlib import Path
 
 
+class _QuietHTTPServer(HTTPServer):
+    def handle_error(self, request, client_address):
+        import sys
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
+            return  # 浏览器主动断开，静默忽略
+        super().handle_error(request, client_address)
+
+
 def main():
-    server = HTTPServer(("127.0.0.1", PORT), Handler)
+    server = _QuietHTTPServer(("127.0.0.1", PORT), Handler)
     logger.info("=" * 50)
     logger.info("Portal 本地服务已启动")
     logger.info("地址: http://127.0.0.1:%d", PORT)
