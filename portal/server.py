@@ -32,6 +32,7 @@ from srv import Handler, PORT, CONFIG_PATH, logger
 import threading
 import webbrowser
 from http.server import HTTPServer
+from pathlib import Path
 
 
 def main():
@@ -42,7 +43,8 @@ def main():
     logger.info("配置文件: %s", CONFIG_PATH)
     logger.info("按 Ctrl+C 停止")
     logger.info("=" * 50)
-    threading.Timer(0.5, webbrowser.open, args=(f"http://127.0.0.1:{PORT}",)).start()
+    html = Path(__file__).parent / "index-standalone.html"
+    threading.Timer(0.5, webbrowser.open, args=(html.as_uri(),)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
