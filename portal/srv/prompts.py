@@ -27,18 +27,37 @@ def build_review_prompt(stock_name: str, stock_code: str, summary_text: str) -> 
 
 
 def build_forecast_prompt(stock_name: str, stock_code: str, summary_text: str,
-                          kline_tail: list, backtest_result: dict = None) -> str:
+                          kline_tail: list, backtest_result: dict = None,
+                          active_patterns: list = None) -> str:
     """构造走势预测 prompt，要求 LLM 输出结构化 JSON。
 
-    kline_tail:      最近若干条 {date, open, close, low, high} 记录，供 LLM 感知价格区间。
-    backtest_result: run_backtest() 的返回值，作为历史信号胜率参考。
+    kline_tail:       最近若干条 {date, open, close, low, high} 记录，供 LLM 感知价格区间。
+    backtest_result:  run_backtest() 的返回值，作为历史信号胜率参考。
+    active_patterns:  当前已触发的形态及其回测胜率，由 _extract_active_patterns 提取。
     """
     kline_str = "\n".join(
         f"  {r.get('date')}: O={r.get('open')} H={r.get('high')} L={r.get('low')} C={r.get('close')}"
         for r in kline_tail if isinstance(r, dict)
     )
 
-    # 回测摘要：只取有统计数据的信号，列出 1/3/5 日胜率和均收益
+    # ── 当前触发形态（优先展示，LLM 应重点参考）──────────────
+    active_str = ""
+    if active_patterns:
+        triggered = [p for p in active_patterns if p.get("triggered")]
+        if triggered:
+            lines = ["当前触发形态及历史回测胜率（⚡ 表示今日已触发，应重点参考）："]
+            for p in triggered:
+                stats = p.get("stats") or {}
+                parts = []
+                for d in ("1", "3", "5", "10", "20"):
+                    s = stats.get(d)
+                    if s and s.get("win_rate") is not None:
+                        parts.append(f"{d}日胜率{s['win_rate']}%/均收益{s['avg_return']}%")
+                stat_str = "  ".join(parts) if parts else "无统计"
+                lines.append(f"  ⚡ {p['name']}（历史触发{p.get('count',0)}次，最近:{p.get('last_date','—')}）：{stat_str}")
+            active_str = "\n" + "\n".join(lines) + "\n"
+
+    # ── 全量回测摘要（所有信号，作为背景参考）────────────────
     backtest_str = ""
     if backtest_result and isinstance(backtest_result, dict):
         signals = backtest_result.get("signals") or {}
@@ -63,7 +82,7 @@ def build_forecast_prompt(stock_name: str, stock_code: str, summary_text: str,
 
 量化分析摘要：
 {summary_text}
-{backtest_str}
+{active_str}{backtest_str}
 
 最近 K 线（OHLC）：
 {kline_str}
@@ -89,7 +108,7 @@ def build_forecast_prompt(stock_name: str, stock_code: str, summary_text: str,
 
 注意：
 - 所有价格数字必须是合理的浮点数，基于最近收盘价 {kline_tail[-1].get('close') if kline_tail else '?'} 附近，幅度不超过 ±10%。
-- 回测数据中胜率高的信号意味着历史上该信号后续走势更可预测，请在制定预测时优先参考当前触发的高胜率信号。
+- 当前触发形态（⚡标注）的回测胜率是最重要的参考依据，请优先基于这些信号制定预测。
 - next_day 的 high/low 要比 week_forecast[0] 的 high/low 更精确（日内区间更窄）。
 - week_forecast 每日 open 应等于或接近前一日 close（连续性）。
 - 只输出 JSON，不要任何其他文字。"""

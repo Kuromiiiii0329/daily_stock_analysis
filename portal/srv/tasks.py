@@ -338,17 +338,24 @@ def _run_deep_analysis_task(
                 except Exception as _be:
                     logger.warning("走势预测阶段获取回测数据失败: %s", _be)
 
+                # ── 提取当前触发的形态，关联回测胜率 ──────────────
+                active_patterns = _extract_active_patterns(results, backtest_result, kline_tail)
+                if active_patterns:
+                    log(f"🔍 当前触发形态：{[p['name'] for p in active_patterns]}")
+
                 if llm_call and kline_tail:
                     raw = llm_call(build_forecast_prompt(
-                        stock_name, stock_code, summary_text, kline_tail, backtest_result
+                        stock_name, stock_code, summary_text, kline_tail,
+                        backtest_result, active_patterns,
                     )).strip()
                     # 抠 JSON
                     s, e_ = raw.find("{"), raw.rfind("}")
                     forecast_obj = json.loads(raw[s:e_+1]) if s >= 0 and e_ > s else {}
+                    forecast_obj["active_patterns"] = active_patterns
                     final_report["price_forecast"] = forecast_obj
                     log("✅ 走势预测完成")
                 else:
-                    final_report["price_forecast"] = {}
+                    final_report["price_forecast"] = {"active_patterns": active_patterns}
                     if not llm_call:
                         log("⚠️ 未配置 LLM，跳过走势预测")
                     else:
@@ -513,3 +520,68 @@ def _run_market_review_task(task_id: str, open_report: bool = True):
         with _tasks_lock:
             _tasks[task_id]["status"] = "error"
             _tasks[task_id]["finished_at"] = datetime.now(TZ_CN).isoformat()
+
+
+def _extract_active_patterns(results: list, backtest_result: dict | None, kline_tail: list) -> list:
+    """从技术面各 section.data 提取当前触发的形态，关联回测胜率数据。
+
+    返回 list[dict]，每条：
+      name       信号名（与 backtester SIGNALS 一致）
+      triggered  True 表示当前 K 线末尾已触发
+      last_date  该信号最近历史触发日期（来自 backtest）
+      count      历史触发次数
+      stats      {1,3,5,10,20} 日胜率/均收益（来自 backtest）
+    """
+    last_kline = kline_tail[-1] if kline_tail else {}
+    close = last_kline.get("close", 0) or 0
+
+    tech_result = next((r for r in (results or []) if getattr(r, "dimension", "") == "technical"), None)
+
+    def _sec_data(key):
+        if not tech_result:
+            return {}
+        sec = next((s for s in (tech_result.sections or []) if s.key == key), None)
+        return sec.data if sec else {}
+
+    macd = _sec_data("macd")
+    kdj  = _sec_data("kdj")
+    rsi  = _sec_data("rsi")
+    vol  = _sec_data("volume")
+    boll = _sec_data("bollinger")
+    ma   = _sec_data("ma_system")
+
+    triggered_map = {
+        "MACD金叉":        bool(macd.get("golden")),
+        "MACD死叉":        bool(macd.get("death")),
+        "RSI超卖(<30)":    (rsi.get("rsi6", 50) or 50) < 30,
+        "RSI超买(>70)":    (rsi.get("rsi6", 50) or 50) > 70,
+        "KDJ金叉":         bool(kdj.get("golden")),
+        "放量上涨":         (vol.get("vol_ratio", 0) or 0) > 2 and (vol.get("close_change", 0) or 0) > 0,
+        "放量下跌":         (vol.get("vol_ratio", 0) or 0) > 2 and (vol.get("close_change", 0) or 0) < 0,
+        "均线多头排列":     bool(
+            ma.get("ma5") and ma.get("ma10") and ma.get("ma20")
+            and (ma.get("ma5") or 0) > (ma.get("ma10") or 0) > (ma.get("ma20") or 0) > 0
+        ),
+        "价格跌破布林下轨": close > 0 and (boll.get("lower", 0) or 0) > 0 and close < (boll.get("lower") or 0),
+    }
+
+    bt_signals = (backtest_result or {}).get("signals") or {}
+    patterns = []
+    for sig_name, is_triggered in triggered_map.items():
+        bt = bt_signals.get(sig_name)
+        if not isinstance(bt, dict) or bt.get("count", 0) == 0:
+            stats = None
+            last_date = None
+        else:
+            stats = bt.get("stats") or {}
+            last_date = bt.get("last_date")
+        patterns.append({
+            "name":      sig_name,
+            "triggered": is_triggered,
+            "last_date": last_date,
+            "count":     (bt or {}).get("count", 0),
+            "stats":     stats,
+        })
+
+    patterns.sort(key=lambda p: (not p["triggered"], -(p["count"] or 0)))
+    return patterns
