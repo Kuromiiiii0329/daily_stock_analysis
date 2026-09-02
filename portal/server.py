@@ -29,6 +29,8 @@ import srv
 from srv import *          # noqa: F401,F403  re-export 全部公开符号（含 Handler/常量/任务函数）
 from srv import Handler, PORT, CONFIG_PATH, logger
 
+import threading
+import webbrowser
 from http.server import HTTPServer
 
 
@@ -40,6 +42,7 @@ def main():
     logger.info("配置文件: %s", CONFIG_PATH)
     logger.info("按 Ctrl+C 停止")
     logger.info("=" * 50)
+    threading.Timer(0.5, webbrowser.open, args=(f"http://127.0.0.1:{PORT}",)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
