@@ -212,16 +212,12 @@ def analyze_macd(df) -> Section:
         f"- 近10日DIF趋势：{dif_trend}（斜率{dif_slope:+.5f}），"
         f"柱线近3日：{bar3_desc}，零轴穿越{zero_crosses}次\n"
     )
-    hist_brief = "  ".join(
-        f"{dates[i][-5:]}柱{bars[i]:+.3f}" for i in range(len(dates))
-    )
 
     content = (
         f"**DIF={dif:.4f}  DEA={dea:.4f}  MACD柱={bar:.4f}**\n"
         f"- 位置：{zero_pos} {cross}\n"
         f"- 柱线趋势：{bar_trend}\n"
         + trend_line
-        + f"- 近10日柱线：{hist_brief}\n"
     )
     return Section(key="macd", title="MACD指标", content=content,
                    data={"dif": dif, "dea": dea, "bar": bar,
@@ -253,15 +249,11 @@ def analyze_rsi(df) -> Section:
     r6_vals = [r["rsi6"] for r in hist10]
     r6_slope = _slope(r6_vals)
     r6_trend = _trend_str(r6_slope)
-    hist_brief = "  ".join(
-        f"{r['date'][-5:]}:{r['rsi6']:.0f}" for r in hist10 if r["rsi6"] is not None
-    )
 
     content = (
         f"**RSI(6)={r6:.1f}  RSI(12)={r12:.1f}  RSI(24)={r24:.1f}**\n"
         f"- 区间：{status}\n"
         f"- 近10日RSI(6)趋势：{r6_trend}（斜率{r6_slope:+.3f}）\n"
-        f"- 近10日RSI(6)：{hist_brief}\n"
         f"- 参考：超买>70，超卖<30\n"
     )
     return Section(key="rsi", title="RSI超买超卖", content=content,
@@ -288,15 +280,11 @@ def analyze_kdj(df) -> Section:
     j_vals  = [r["kdj_j"] for r in hist10]
     j_slope = _slope(j_vals)
     j_trend = _trend_str(j_slope)
-    hist_brief = "  ".join(
-        f"{r['date'][-5:]}J:{r['kdj_j']:.0f}" for r in hist10 if r["kdj_j"] is not None
-    )
 
     content = (
         f"**K={k:.1f}  D={d:.1f}  J={j:.1f}** {cross}{overbought}\n"
         f"- K>D（多头信号）{' ✓' if k > d else ' ✗'}\n"
         f"- 近10日J值趋势：{j_trend}（斜率{j_slope:+.3f}）\n"
-        f"- 近10日J值：{hist_brief}\n"
     )
     return Section(key="kdj", title="KDJ随机指标", content=content,
                    data={"k": k, "d": d, "j": j, "golden": golden, "death": death,
@@ -345,16 +333,11 @@ def analyze_bollinger(df) -> Section:
         else:
             r["pos_pct"] = None
 
-    hist_brief = "  ".join(
-        f"{r['date'][-5:]}:{r['pos_pct']:.0f}%" for r in hist10 if r["pos_pct"] is not None
-    )
-
     content = (
         f"**上轨={upper:.2f}  中轨={mid:.2f}  下轨={lower:.2f}**\n"
         f"- 带宽：{width:.1f}%  价格位置：{pos_pct:.0f}%\n"
         f"- 状态：{status}\n"
         f"- 近10日带宽趋势：{width_trend}（斜率{width_slope:+.3f}）\n"
-        f"- 近10日价格位置(0%=下轨,100%=上轨)：{hist_brief}\n"
     )
     return Section(key="bollinger", title="布林带", content=content,
                    data={"upper": upper, "mid": mid, "lower": lower,
@@ -409,18 +392,11 @@ def analyze_volume(df) -> Section:
         else:
             r["chg_pct"] = None
 
-    hist_brief = "  ".join(
-        f"{r['date'][-5:]}量比{r['vol_ratio']:.1f}x"
-        + (f"({r['chg_pct']:+.1f}%)" if r.get("chg_pct") is not None else "")
-        for r in hist10 if r["vol_ratio"] is not None
-    )
-
     content = (
         intraday_note
         + f"**量比={vol_ratio:.2f}x  当日涨跌={close_change:+.2f}%**\n"
         f"- 状态：{status}\n"
         f"- 近10日量能趋势：{vol_trend}（斜率{vol_slope:+.3f}）\n"
-        f"- 近10日量比：{hist_brief}\n"
         f"- 量比>2为放量，<0.5为缩量\n"
     )
     return Section(key="volume", title="量价关系", content=content,
@@ -495,16 +471,10 @@ def analyze_overbought(df) -> Section:
         else "↔ 指标分化"
     )
 
-    hist_brief = "  ".join(
-        f"{r['date'][-5:]}RSI:{r['rsi6']:.0f}J:{r['kdj_j']:.0f}"
-        for r in hist10 if r["rsi6"] is not None
-    )
-
     content = (
         "**" + status + "**\n"
         + "\n".join(f"- {x}" for x in lines)
         + f"\n- 近10日综合热度：{heat_desc}\n"
-        + f"- 近10日(RSI/J)：{hist_brief}\n"
         + "- 判据：多指标共振时信号更可靠（≥3 项同向为强信号）\n"
     )
     return Section(key="overbought", title="超买超卖综合", content=content,
