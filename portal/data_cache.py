@@ -202,7 +202,8 @@ class StockDataCache:
 
             # 统一 date 列为字符串（避免 Timestamp vs str 比较报错）
             merged["date"] = merged["date"].astype(str).str.slice(0, 10)
-            merged = merged.sort_values("date").drop_duplicates("date").reset_index(drop=True)
+            # 新数据在后，keep="last" 让增量数据覆盖同日旧缓存（修复盘中快照被保留的问题）
+            merged = merged.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
             merged.to_csv(self._kline_path(code), index=False, encoding="utf-8")
             logger.info("[cache] 合并 %s K线: 新增 %d 条，合计 %d 条", code, len(new_df), len(merged))
         except Exception as e:

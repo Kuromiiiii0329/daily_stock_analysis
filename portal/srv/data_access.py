@@ -124,9 +124,13 @@ def _fetch_kline(stock_code: str, log) -> object:
             start = None
             end   = None
 
-        # 网络拉取
+        # 网络拉取：只用内网可用的两个数据源，volume 单位统一为"股（shares）"
+        # AkshareFetcher: ak.stock_zh_a_hist() 直接返回股，_normalize_data 无乘法
+        # BaostockFetcher: query_history_k_data_plus() 直接返回股，pd.to_numeric() 无乘法
         from data_provider import DataFetcherManager
-        mgr = DataFetcherManager()   # 无参：自动按优先级加载默认数据源
+        from data_provider.akshare_fetcher import AkshareFetcher
+        from data_provider.baostock_fetcher import BaostockFetcher
+        mgr = DataFetcherManager(fetchers=[AkshareFetcher(), BaostockFetcher()])
 
         if mode == "incremental":
             log(f"📥 增量拉取 {start} ~ {end}")
