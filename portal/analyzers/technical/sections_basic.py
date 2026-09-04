@@ -20,18 +20,20 @@ def analyze_ma(df, stock_code) -> Section:
     ma5   = last.get("ma5")
     ma10  = last.get("ma10")
     ma20  = last.get("ma20")
+    ma30  = last.get("ma30")
     ma60  = last.get("ma60")
     ma120 = last.get("ma120")
     ma250 = last.get("ma250")
 
     def _v(x): return x if (x is not None and not pd.isna(x)) else None
 
-    ma5, ma10, ma20, ma60, ma120, ma250 = (
-        _v(ma5), _v(ma10), _v(ma20), _v(ma60), _v(ma120), _v(ma250)
+    ma5, ma10, ma20, ma30, ma60, ma120, ma250 = (
+        _v(ma5), _v(ma10), _v(ma20), _v(ma30), _v(ma60), _v(ma120), _v(ma250)
     )
 
     bias5  = (close - ma5)  / ma5  * 100 if ma5  else 0
     bias20 = (close - ma20) / ma20 * 100 if ma20 else 0
+    bias30 = (close - ma30) / ma30 * 100 if ma30 else 0
 
     # 均线多空排列（短中期）— 仅客观描述形态，不打分（打分交给 LLM）
     alignment = ""
@@ -43,20 +45,32 @@ def analyze_ma(df, stock_code) -> Section:
         else:
             alignment = "均线缠绕（震荡）"
 
-    # 价格与年线/120日线的位置（客观事实）
+    # 中长期均线多空排列（30/60/120）
+    mid_alignment = ""
+    if all(v is not None for v in [ma30, ma60, ma120]):
+        if ma30 > ma60 > ma120:
+            mid_alignment = "中长期多头（MA30>MA60>MA120）"
+        elif ma30 < ma60 < ma120:
+            mid_alignment = "中长期空头（MA30<MA60<MA120）"
+
+    # 价格与年线/120日线/60日线的位置（客观事实）
     above_ma250 = ma250 and close > ma250
     above_ma120 = ma120 and close > ma120
+    above_ma60  = ma60  and close > ma60
 
     if abs(bias5) > 8:
-        bias_warn = f"  ⚠️ 乖离率偏大（{bias5:+.1f}%）\n"
+        bias_warn = f"  ⚠️ 短期乖离率偏大（MA5乖离 {bias5:+.1f}%）\n"
     else:
         bias_warn = ""
 
     # 关键均线支撑/压力描述
     pos_lines = []
+    if ma30:
+        rel30 = "上方（支撑）" if close > ma30 else "下方（压力）"
+        pos_lines.append(f"MA30={ma30:.2f}（月线，{rel30}）")
     if ma60:
         rel60 = "上方（支撑）" if close > ma60 else "下方（压力）"
-        pos_lines.append(f"MA60={ma60:.2f}（60日线，{rel60}）")
+        pos_lines.append(f"MA60={ma60:.2f}（季线，{rel60}）")
     if ma120:
         rel120 = "上方（支撑）" if close > ma120 else "下方（压力）"
         pos_lines.append(f"MA120={ma120:.2f}（半年线，{rel120}）")
@@ -69,24 +83,28 @@ def analyze_ma(df, stock_code) -> Section:
         f"- MA5={ma5:.2f}  MA10={ma10:.2f}  MA20={ma20:.2f}"
         if ma5 and ma10 and ma20 else "- 均线数据不足"
     )
+    if ma30:  ma_line += f"  MA30={ma30:.2f}"
     if ma60:  ma_line += f"  MA60={ma60:.2f}"
     if ma120: ma_line += f"  MA120={ma120:.2f}"
     if ma250: ma_line += f"  MA250={ma250:.2f}"
 
     content = (
-        f"**{alignment}**\n"
+        f"**{alignment}**"
+        + (f"  {mid_alignment}" if mid_alignment else "") + "\n"
         f"- 当前价: {close:.2f}\n"
         f"{ma_line}\n"
-        f"- 乖离率MA5: {bias5:+.1f}%  乖离率MA20: {bias20:+.1f}%\n"
+        f"- 乖离率 MA5:{bias5:+.1f}%  MA20:{bias20:+.1f}%"
+        + (f"  MA30:{bias30:+.1f}%" if ma30 else "") + "\n"
         + bias_warn
         + ("\n".join(f"- {l}" for l in pos_lines) + "\n" if pos_lines else "")
     )
     signal = "hold"
     return Section(key="ma_system", title="均线系统", content=content,
-                   data={"ma5": ma5, "ma10": ma10, "ma20": ma20, "ma60": ma60,
-                         "ma120": ma120, "ma250": ma250,
-                         "close": close, "bias5": bias5,
-                         "above_ma250": above_ma250, "above_ma120": above_ma120},
+                   data={"ma5": ma5, "ma10": ma10, "ma20": ma20, "ma30": ma30,
+                         "ma60": ma60, "ma120": ma120, "ma250": ma250,
+                         "close": close, "bias5": bias5, "bias20": bias20, "bias30": bias30,
+                         "above_ma250": above_ma250, "above_ma120": above_ma120,
+                         "above_ma60": above_ma60},
                    score=50, signal=signal)
 
 

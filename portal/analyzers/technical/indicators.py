@@ -15,7 +15,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     volume = df.get("volume", pd.Series(dtype=float))
 
     # MA
-    for n in [5, 10, 20, 60, 120, 250]:
+    for n in [5, 10, 20, 30, 60, 120, 250]:
         df[f"ma{n}"] = close.rolling(n).mean()
 
     # MACD (12/26/9)
