@@ -105,80 +105,81 @@ def _fetch_kline(stock_code: str, log) -> object:
     流程：
       1. 检查 portal/data/stocks/{code}/kline.csv 是否存在
       2. 计算需要拉取的日期范围（full / incremental / up_to_date）
-      3. 拉取新数据 → 合并到缓存 → 返回完整 DataFrame
+      3. 拉取新数据（失败自动重试最多 10 次）→ 合并到缓存 → 返回完整 DataFrame
+      4. 全部重试失败时抛出异常，不降级使用过期缓存
     """
-    try:
-        from portal.data_cache import StockDataCache
-        cache = StockDataCache()
+    import time as _time
 
-        start, end, mode = cache.calc_fetch_range(stock_code, days=250)
+    from portal.data_cache import StockDataCache
+    cache = StockDataCache()
 
-        if mode == "up_to_date":
-            df = cache.get_kline(stock_code)
-            if df is not None and not df.empty:
-                log(f"📦 使用本地缓存（已是最新，{len(df)} 条）")
-                return df
-            # 缓存存在但读取失败，降级到网络拉取
-            log("⚠️  本地缓存读取失败，尝试网络拉取")
-            mode = "full"
-            start = None
-            end   = None
+    start, end, mode = cache.calc_fetch_range(stock_code, days=250)
 
-        # 网络拉取：只用内网可用的两个数据源，volume 单位统一为"股（shares）"
-        # AkshareFetcher: ak.stock_zh_a_hist() 直接返回股，_normalize_data 无乘法
-        # BaostockFetcher: query_history_k_data_plus() 直接返回股，pd.to_numeric() 无乘法
-        from data_provider import DataFetcherManager
-        from data_provider.akshare_fetcher import AkshareFetcher
-        from data_provider.baostock_fetcher import BaostockFetcher
-        mgr = DataFetcherManager(fetchers=[AkshareFetcher(), BaostockFetcher()])
+    if mode == "up_to_date":
+        df = cache.get_kline(stock_code)
+        if df is not None and not df.empty:
+            log(f"📦 使用本地缓存（已是最新，{len(df)} 条）")
+            return df
+        log("⚠️  本地缓存读取失败，尝试网络拉取")
+        mode = "full"
+        start = None
+        end   = None
 
-        if mode == "incremental":
-            log(f"📥 增量拉取 {start} ~ {end}")
-            result = mgr.get_daily_data(stock_code, start_date=start, end_date=end)
-            if isinstance(result, tuple):
-                new_df, source_name = result
-            else:
-                new_df, source_name = result, "unknown"
+    # 网络拉取：只用内网可用的两个数据源，volume 单位统一为"股（shares）"
+    # AkshareFetcher: ak.stock_zh_a_hist() 直接返回股，_normalize_data 无乘法
+    # BaostockFetcher: query_history_k_data_plus() 直接返回股，pd.to_numeric() 无乘法
+    from data_provider import DataFetcherManager
+    from data_provider.baostock_fetcher import BaostockFetcher
 
-            if new_df is not None and not new_df.empty:
-                cache.merge_kline(stock_code, new_df, source_name)
-                log(f"✅ 增量更新 {len(new_df)} 条，写入缓存")
-            else:
-                log("ℹ️  无新交易数据（非交易日），使用现有缓存进行复盘分析")
+    MAX_RETRIES = 10
+    RETRY_DELAY = 0.5  # 秒，每次失败后等待
 
-            df = cache.get_kline(stock_code)
-            if df is not None and not df.empty:
-                return df
-            log("⚠️  本地缓存为空，尝试全量拉取")
-            mode = "full"
-            start = None
-            end   = None
+    def _fetch_with_retry(fetch_fn, desc: str):
+        """执行 fetch_fn()，失败后最多重试 MAX_RETRIES 次，全部失败则抛出异常。"""
+        last_err = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                mgr = DataFetcherManager(fetchers=[BaostockFetcher()])
+                result = fetch_fn(mgr)
+                df_r, src = result if isinstance(result, tuple) else (result, "unknown")
+                if df_r is not None and not df_r.empty:
+                    return df_r, src
+                last_err = "返回空数据"
+            except Exception as e:
+                last_err = str(e)
+            log(f"⚠️  {desc} 第{attempt}/{MAX_RETRIES}次失败：{last_err}"
+                + (f"，{RETRY_DELAY}s 后重试…" if attempt < MAX_RETRIES else ""))
+            if attempt < MAX_RETRIES:
+                _time.sleep(RETRY_DELAY)
+        raise RuntimeError(f"{stock_code} K线拉取失败（{MAX_RETRIES}次均失败，最后错误：{last_err}）")
 
-        else:  # full
-            log(f"🌐 首次全量拉取（最近 250 日）")
-            result = mgr.get_daily_data(stock_code, days=250)
-            if isinstance(result, tuple):
-                df, source_name = result
-            else:
-                df, source_name = result, "unknown"
-
-            if df is not None and not df.empty:
-                cache.save_kline(stock_code, df, source_name)
-                log(f"✅ 获取 {len(df)} 条K线数据，已写入缓存")
-                return df
-            else:
-                log("⚠️  K线数据为空")
-                return None
-
-    except Exception as e:
-        log(f"⚠️  K线数据获取失败：{e}")
-        # 降级：尝试直接从缓存读取（即使过期也比没有好）
+    if mode == "incremental":
+        log(f"📥 增量拉取 {start} ~ {end}")
         try:
-            from portal.data_cache import StockDataCache
-            df = StockDataCache().get_kline(stock_code)
-            if df is not None and not df.empty:
-                log(f"📦 降级使用过期缓存（{len(df)} 条）")
-                return df
-        except Exception:
-            pass
-        return None
+            mgr = DataFetcherManager(fetchers=[BaostockFetcher()])
+            result = mgr.get_daily_data(stock_code, start_date=start, end_date=end)
+            new_df, source_name = result if isinstance(result, tuple) else (result, "unknown")
+        except Exception as e:
+            new_df, source_name = None, "unknown"
+            log(f"⚠️  增量拉取失败（视为无新数据）：{e}")
+
+        if new_df is not None and not new_df.empty:
+            cache.merge_kline(stock_code, new_df, source_name)
+            log(f"✅ 增量更新 {len(new_df)} 条，写入缓存")
+        else:
+            log("ℹ️  无新交易数据（非交易日或今日未收盘），使用现有缓存")
+
+        df = cache.get_kline(stock_code)
+        if df is not None and not df.empty:
+            return df
+        raise RuntimeError(f"{stock_code} 增量合并后缓存读取失败")
+
+    else:  # full
+        log(f"🌐 首次全量拉取（最近 250 日）")
+        df, source_name = _fetch_with_retry(
+            lambda mgr: mgr.get_daily_data(stock_code, days=250),
+            "全量拉取"
+        )
+        cache.save_kline(stock_code, df, source_name)
+        log(f"✅ 获取 {len(df)} 条K线数据，已写入缓存")
+        return df

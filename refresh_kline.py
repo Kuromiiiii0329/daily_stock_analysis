@@ -57,14 +57,13 @@ def fetch_and_backtest(code: str):
 
     from portal.data_cache import StockDataCache
     from data_provider import DataFetcherManager
-    from data_provider.akshare_fetcher import AkshareFetcher
     from data_provider.baostock_fetcher import BaostockFetcher
     from portal.backtester import run_backtest
 
     cache = StockDataCache()
 
-    # 只用内网可用的两个数据源（volume 单位均为股，无需额外换算）
-    mgr = DataFetcherManager(fetchers=[AkshareFetcher(), BaostockFetcher()])
+    # 只用 Baostock（内网唯一可用的 A 股日线数据源，volume 单位均为股）
+    mgr = DataFetcherManager(fetchers=[BaostockFetcher()])
     log(f"🌐 全量拉取最近 {DAYS} 日 K 线（约 3 年）…")
     t0 = time.perf_counter()
     result = mgr.get_daily_data(code, days=DAYS)
