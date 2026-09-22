@@ -150,6 +150,7 @@ def _render_forecast_html(forecast: dict, kline_data: list, chart_id: str) -> tu
 
     next_day = forecast.get("next_day") or {}
     week = forecast.get("week_forecast") or []
+    active_patterns = forecast.get("active_patterns") or []
 
     # ── 次日预测摘要 ──────────────────────────────────────────
     nd_high  = next_day.get("high", "")
@@ -182,7 +183,59 @@ def _render_forecast_html(forecast: dict, kline_data: list, chart_id: str) -> tu
     {('<div style="padding:6px 14px 2px;font-size:12px;color:#6b7280">💬 ' + nd_reason + '</div>') if nd_reason else ''}
     """
 
-    # ── 7日模拟K线图（ECharts）────────────────────────────────
+    # ── 当前触发形态回测表 ────────────────────────────────────
+    patterns_html = ""
+    if active_patterns:
+        rows = []
+        for p in active_patterns:
+            triggered = p.get("triggered")
+            stats = p.get("stats") or {}
+            badge = '<span style="background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 5px;font-size:10px;font-weight:600">⚡今日</span>' if triggered else ''
+
+            def _stat(d):
+                s = stats.get(str(d))
+                if not s or s.get("win_rate") is None:
+                    return '<td style="color:#d1d5db;text-align:center">—</td><td style="color:#d1d5db;text-align:center">—</td>'
+                wr = s["win_rate"]
+                avg = s["avg_return"]
+                wr_c = "#16a34a" if wr >= 60 else "#6b7280" if wr >= 45 else "#dc2626"
+                avg_c = "#16a34a" if (avg or 0) > 0 else "#dc2626" if (avg or 0) < 0 else "#6b7280"
+                return f'<td style="text-align:center;color:{wr_c};font-weight:{"600" if wr>=60 else "400"}">{wr}%</td><td style="text-align:center;color:{avg_c}">{avg:+.2f}%</td>'
+
+            row_bg = "background:#fffbeb" if triggered else ""
+            rows.append(
+                f'<tr style="{row_bg}">'
+                f'<td style="padding:5px 8px;white-space:nowrap">{badge} {_esc(p["name"])}</td>'
+                f'<td style="text-align:center;color:#6b7280">{p.get("count") or 0}次</td>'
+                f'<td style="text-align:center;color:#9ca3af;font-size:10px">{p.get("last_date") or "—"}</td>'
+                + _stat(5) + _stat(10) + _stat(20) +
+                f'</tr>'
+            )
+        patterns_html = f"""
+    <div style="padding:8px 14px 4px">
+      <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:6px">📊 形态回测统计</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="border-bottom:1px solid #e5e7eb;color:#9ca3af">
+              <th style="text-align:left;padding:4px 8px;font-weight:500">形态</th>
+              <th style="text-align:center;padding:4px 6px;font-weight:500">触发次数</th>
+              <th style="text-align:center;padding:4px 6px;font-weight:500">最近日期</th>
+              <th style="text-align:center;padding:4px 6px;font-weight:500" colspan="2">5日</th>
+              <th style="text-align:center;padding:4px 6px;font-weight:500" colspan="2">10日</th>
+              <th style="text-align:center;padding:4px 6px;font-weight:500" colspan="2">20日</th>
+            </tr>
+            <tr style="border-bottom:1px solid #f3f4f6;color:#d1d5db;font-size:10px">
+              <th></th><th></th><th></th>
+              <th style="text-align:center">胜率</th><th style="text-align:center">均收益</th>
+              <th style="text-align:center">胜率</th><th style="text-align:center">均收益</th>
+              <th style="text-align:center">胜率</th><th style="text-align:center">均收益</th>
+            </tr>
+          </thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </div>"""
     # 历史：取最近 30 条真实 K 线
     hist = [r for r in (kline_data or []) if isinstance(r, dict) and r.get("close")][-30:]
 
@@ -280,6 +333,7 @@ def _render_forecast_html(forecast: dict, kline_data: list, chart_id: str) -> tu
         <span style="font-size:11px;color:#9ca3af;font-weight:400">LLM 情景模拟，仅供参考</span>
       </div>
       {meta_html}
+      {patterns_html}
       <div style="padding:8px 14px 4px">
         <div id="{chart_id}" style="height:280px;width:100%"></div>
       </div>
@@ -287,33 +341,6 @@ def _render_forecast_html(forecast: dict, kline_data: list, chart_id: str) -> tu
     </div>
     """
     return html, js
-
-
-def _render_sections_html(sections: list, llm_notes: Optional[dict] = None) -> str:
-    """渲染一组 section 卡片（含 LLM 打分说明块）。"""
-    parts = []
-    for s in sections:
-        sig = SIGNAL_CFG.get(s.get("signal", "hold"), SIGNAL_CFG["hold"])
-        note_html = ""
-        note = (llm_notes or {}).get(s.get("key"))
-        if note and isinstance(note, dict):
-            nsig = SIGNAL_CFG.get(note.get("signal", "hold"), SIGNAL_CFG["hold"])
-            nscore = note.get("score", "")
-            reason = _esc(note.get("reason", ""))
-            impact = _esc(note.get("impact", ""))
-            note_html = (
-                f'<div class="note" style="border-color:{nsig["dot"]};background:{nsig["bg"]}">'
-                f'🤖 <b style="color:{nsig["text"]}">{nsig["label"]}'
-                + (f' · {nscore}' if nscore != "" else '') + '</b>'
-                + (f' — {reason}' if reason else '')
-                + (f'（影响：{impact}）' if impact else '') + '</div>'
-            )
-        parts.append(
-            f'<div class="sec"><div class="sec-hd"><span>{_esc(s.get("title"))}</span>'
-            f'<span class="badge" style="background:{sig["bg"]};color:{sig["text"]}">{sig["label"]} · {s.get("score",50)}</span></div>'
-            f'<div class="sec-bd">{_md_to_html(s.get("content",""))}{note_html}</div></div>'
-        )
-    return "\n".join(parts)
 
 
 # ── 个股报告 ──────────────────────────────────────────────────
@@ -516,13 +543,17 @@ def open_in_browser(path: Path, log=None) -> bool:
     try:
         ok = webbrowser.open(Path(path).as_uri())
         msg = f"🌐 已在浏览器打开报告：{path}" if ok else f"⚠️ 浏览器打开失败，报告已生成于：{path}"
-        if log: log(msg)
-        logger.info(msg)
+        if log:
+            log(msg)
+        else:
+            logger.info(msg)
         return bool(ok)
     except Exception as e:
         msg = f"⚠️ 无法自动打开浏览器（{e}），报告已生成于：{path}"
-        if log: log(msg)
-        logger.warning(msg)
+        if log:
+            log(msg)
+        else:
+            logger.warning(msg)
         return False
 
 

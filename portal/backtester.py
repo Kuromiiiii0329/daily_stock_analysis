@@ -38,6 +38,7 @@ def run_backtest(df: pd.DataFrame, forward_days=(1, 3, 5, 10, 20)) -> dict:
         ret_sums   = {d: 0.0 for d in forward_days}
         valid_counts = {d: 0 for d in forward_days}  # 持有期内有足够后续数据的触发次数
         total = 0
+        last_date = None
         for i in range(1, n):
             row = df.iloc[i].to_dict()
             row["prev_dif"] = df.iloc[i-1].get("dif", 0)
@@ -52,6 +53,7 @@ def run_backtest(df: pd.DataFrame, forward_days=(1, 3, 5, 10, 20)) -> dict:
             if not triggered:
                 continue
             total += 1
+            last_date = str(df.iloc[i]["date"])
             for d in forward_days:
                 if i + d < n:
                     ret = (closes[i + d] - closes[i]) / closes[i] * 100
@@ -64,6 +66,7 @@ def run_backtest(df: pd.DataFrame, forward_days=(1, 3, 5, 10, 20)) -> dict:
             continue
         results[sig_name] = {
             "count": total,
+            "last_date": last_date,
             "stats": {
                 str(d): {
                     "win_rate":   round(win_counts[d] / valid_counts[d] * 100, 1) if valid_counts[d] else None,

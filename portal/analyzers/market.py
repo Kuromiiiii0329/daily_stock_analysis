@@ -192,7 +192,7 @@ class MarketAnalyzer:
     @staticmethod
     def _build_kline_data(df, tail=200):
         import pandas as pd
-        keep = ["date", "open", "high", "low", "close", "ma5", "ma20", "ma60", "ma250"]
+        keep = ["date", "open", "high", "low", "close", "ma5", "ma10", "ma20", "ma30", "ma60", "ma120", "ma250"]
         cols = [c for c in keep if c in df.columns]
         sub = df[cols].tail(tail)
         records = []
